@@ -5,7 +5,10 @@ import sqlite3
 
 import pytest
 
+import pytest
+
 from openplan.core.activation import reset_cache
+from openplan.core.errors import InvalidActionError, InvalidStateError
 from openplan.core.state import act
 from openplan.db.schema import init_db
 
@@ -108,10 +111,8 @@ def test_act_cost_delta(conn: sqlite3.Connection, config: dict) -> None:
 
 
 def test_act_invalid_state(conn: sqlite3.Connection, config: dict) -> None:
-    result = act("S-999999", "inspect", conn, config)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "INVALID_STATE"
+    with pytest.raises(InvalidStateError):
+        act("S-999999", "inspect", conn, config)
 
 
 def test_act_invalid_action(conn: sqlite3.Connection, config: dict) -> None:
@@ -119,7 +120,5 @@ def test_act_invalid_action(conn: sqlite3.Connection, config: dict) -> None:
     tgt = _make_node(conn)
     _edge(conn, src, tgt, "inspect")
 
-    result = act(src, "nonexistent", conn, config)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "INVALID_ACTION"
+    with pytest.raises(InvalidActionError):
+        act(src, "nonexistent", conn, config)

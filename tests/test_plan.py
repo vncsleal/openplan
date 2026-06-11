@@ -4,7 +4,10 @@ import sqlite3
 
 import pytest
 
+import pytest
+
 from openplan.core.activation import reset_cache
+from openplan.core.errors import NoPathError
 from openplan.core.state import generate_id
 from openplan.core.planner import plan
 from openplan.db.schema import init_db
@@ -137,7 +140,5 @@ def test_plan_no_path(conn: sqlite3.Connection, config: dict) -> None:
 
     _edge(conn, s1, _make_node(conn), "some_action")
 
-    result = plan(s1, s2, conn, config)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "NO_PATH"
+    with pytest.raises(NoPathError):
+        plan(s1, s2, conn, config)

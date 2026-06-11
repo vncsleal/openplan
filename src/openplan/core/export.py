@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from openplan.core.activation import get_activation, recompute_all_dirty
+from openplan.core.errors import OpenPlanError
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
@@ -70,6 +71,12 @@ def _project_root_node(project: str, conn: sqlite3.Connection) -> str | None:
     return row["id"] if row else None
 
 
+def _get_archive_cols(conn: sqlite3.Connection) -> str:
+    cols = conn.execute("PRAGMA table_info(events_archive)").fetchall()
+    names = [r["name"] for r in cols]
+    return ", ".join(names)
+
+
 def compress(
     project: str, conn: sqlite3.Connection, config: dict[str, Any],
     older_than_days: int = 30, merge_orphans: bool = True, session_id: str = "",
@@ -80,8 +87,10 @@ def compress(
         cutoff = datetime.now(timezone.utc).timestamp() - older_than_days * 86400
         cutoff_str = datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
+        archive_cols = _get_archive_cols(conn)
         conn.execute(
-            "INSERT OR IGNORE INTO events_archive SELECT * FROM events WHERE project = ? AND created_at < ?",
+            f"INSERT OR IGNORE INTO events_archive ({archive_cols}) "
+            f"SELECT {archive_cols} FROM events WHERE project = ? AND created_at < ?",
             (project, cutoff_str),
         )
         archived = conn.execute("SELECT changes() AS cnt").fetchone()["cnt"]

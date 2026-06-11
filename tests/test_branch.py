@@ -5,7 +5,10 @@ import sqlite3
 
 import pytest
 
+import pytest
+
 from openplan.core.activation import get_activation, reset_cache
+from openplan.core.errors import InvalidStateError
 from openplan.core.state import branch, generate_id
 from openplan.db.schema import init_db
 
@@ -112,7 +115,5 @@ def test_branch_records_event(conn: sqlite3.Connection, config: dict) -> None:
 
 
 def test_branch_invalid_state(conn: sqlite3.Connection, config: dict) -> None:
-    result = branch("S-999999", [{"label": "Test", "action": "implement", "prob": 0.8}], conn, config)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "INVALID_STATE"
+    with pytest.raises(InvalidStateError):
+        branch("S-999999", [{"label": "Test", "action": "implement", "prob": 0.8}], conn, config)

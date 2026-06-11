@@ -258,31 +258,31 @@ def _graph_health(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
             "code": "HIGH_ORPHAN_COUNT",
             "severity": "high" if orphan_count > 10 else "medium",
             "message": f"{orphan_count} states have no outgoing edges and are never acted upon",
-            "fix": "Branch from each orphan state with actionable options, then act and learn",
+            "fix": {"tool": "branch", "action": "implement"},
         })
     if len(actions_used) == 0:
         issues.append({
             "code": "EMPTY_GRAPH", "severity": "high",
             "message": "No edges exist",
-            "fix": "Use branch() with action verbs, then act() to traverse",
+            "fix": {"tool": "branch", "action": "implement"},
         })
     elif len(actions_used) <= 1:
         issues.append({
             "code": "LOW_ACTION_DIVERSITY", "severity": "medium",
             "message": f"Only 1 action type used ({actions_used[0]['action']})",
-            "fix": "Use domain verbs (implement, research, review, test, deploy) in branch() options",
+            "fix": {"tool": "branch", "action": "research"},
         })
     if calibration_count == 0 and edge_count > 0:
         issues.append({
             "code": "NO_CALIBRATION", "severity": "high",
             "message": "No edges have been calibrated",
-            "fix": "After each act(), call learn(from_state, to_state, outcome, actual_cost)",
+            "fix": {"tool": "learn", "action": "implement"},
         })
     if max_depth <= 1 and state_count > 3:
         issues.append({
             "code": "SHALLOW_GRAPH", "severity": "medium",
             "message": f"Graph depth is {max_depth}",
-            "fix": "Branch again from the result state after acting, to build depth",
+            "fix": {"tool": "branch", "action": "implement"},
         })
 
     return {

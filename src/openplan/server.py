@@ -16,6 +16,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapability
 
 from openplan.config import load_config
+from openplan.core.errors import OpenPlanError
 from openplan.core.state import act as _act
 from openplan.core.state import init_project as _init
 from openplan.core.state import branch as _branch
@@ -117,18 +118,11 @@ async def _handle_act(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
         result = _act(
-            args["state"],
-            args["action"],
-            _get_conn(),
-            _config,
-            target=args.get("target"),
-            evidence=args.get("evidence"),
-            thought=args.get("thought"),
-            expected_cost=args.get("expected_cost"),
+            args["state"], args["action"], _get_conn(), _config,
+            target=args.get("target"), evidence=args.get("evidence"),
+            thought=args.get("thought"), expected_cost=args.get("expected_cost"),
             session_id=_SESSION_ID,
         )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
         return ok(result)
     finally:
         _write_lock_release()
@@ -146,15 +140,7 @@ async def _handle_export(args: dict) -> CallToolResult:
 async def _handle_branch(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
-        result = _branch(
-            args["state"],
-            args["options"],
-            _get_conn(),
-            _config,
-            session_id=_SESSION_ID,
-        )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
+        result = _branch(args["state"], args["options"], _get_conn(), _config, session_id=_SESSION_ID)
         return ok(result)
     finally:
         _write_lock_release()
@@ -164,15 +150,9 @@ async def _handle_plan(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
         result = _plan(
-            args["from_id"],
-            args["target_id"],
-            _get_conn(),
-            _config,
-            constraints=args.get("constraints"),
-            session_id=_SESSION_ID,
+            args["from_id"], args["target_id"], _get_conn(), _config,
+            constraints=args.get("constraints"), session_id=_SESSION_ID,
         )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
         return ok(result)
     finally:
         _read_lock_release()
@@ -182,17 +162,10 @@ async def _handle_learn(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
         result = _learn(
-            args["from_state"],
-            args["to_state"],
-            args["outcome"],
-            args["actual_cost"],
-            _get_conn(),
-            _config,
-            insight=args.get("insight", ""),
-            session_id=_SESSION_ID,
+            args["from_state"], args["to_state"], args["outcome"],
+            args["actual_cost"], _get_conn(), _config,
+            insight=args.get("insight", ""), session_id=_SESSION_ID,
         )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
         return ok(result)
     finally:
         _write_lock_release()
@@ -201,14 +174,7 @@ async def _handle_learn(args: dict) -> CallToolResult:
 async def _handle_init(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
-        result = _init(
-            args["project"],
-            args.get("label"),
-            _get_conn(),
-            session_id=_SESSION_ID,
-        )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
+        result = _init(args["project"], args.get("label"), _get_conn(), session_id=_SESSION_ID)
         return ok(result)
     finally:
         _write_lock_release()
@@ -239,15 +205,11 @@ async def _handle_compress(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
         result = _compress(
-            args["project"],
-            _get_conn(),
-            _config,
+            args["project"], _get_conn(), _config,
             older_than_days=args.get("older_than_days", 30),
             merge_orphans=args.get("merge_orphans", True),
             session_id=_SESSION_ID,
         )
-        if not result.get("ok", True):
-            return err(result["error"]["code"], result["error"]["message"])
         return ok(result)
     finally:
         _write_lock_release()
@@ -297,6 +259,8 @@ async def main() -> None:
             return err("UNKNOWN", f"Unknown tool: {name}")
         try:
             return await handler(arguments)
+        except OpenPlanError as e:
+            return err(e.code, e.message)
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:

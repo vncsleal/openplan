@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 
 from openplan.core.activation import get_activation, mark_dirty
+from openplan.core.errors import (
+    InvalidActionError, InvalidOutcomeError, InvalidPayloadError, InvalidStateError,
+    NoActionError, NoEdgeError, NoEventError, NoPathError, OpenPlanError,
+    TargetNotFoundError, TargetResolutionError,
+)
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
@@ -47,7 +52,7 @@ def plan(
 ) -> dict[str, Any]:
     src = conn.execute("SELECT * FROM nodes WHERE id = ?", (from_id,)).fetchone()
     if not src:
-        return {"ok": False, "error": {"code": "INVALID_STATE", "message": f"From state {from_id} not found"}}
+        raise InvalidStateError(from_id)
 
     resolved_state: str | None = None
     resolved_info: dict[str, Any] | None = None
@@ -55,13 +60,13 @@ def plan(
     if re.match(r"^S-\d{6}$", target_id):
         tgt = conn.execute("SELECT * FROM nodes WHERE id = ?", (target_id,)).fetchone()
         if not tgt:
-            return {"ok": False, "error": {"code": "INVALID_TARGET", "message": f"Target state {target_id} not found"}}
+            raise TargetNotFoundError(from_id, "resolve", target_id)
         resolved_state = target_id
     else:
         try:
             from openplan.core.embedding import get_cache, get_provider
             if not get_provider().loaded:
-                return {"ok": False, "error": {"code": "TARGET_RESOLUTION_FAILED", "message": "Embedding provider not available — use a state ID instead"}}
+                raise TargetResolutionError("Embedding provider not available — use a state ID instead")
             cache = get_cache()
             results = cache.query(target_id, conn, top_k=1)
             if results:
@@ -69,11 +74,11 @@ def plan(
                 resolved_state = best["id"]
                 resolved_info = best
             else:
-                return {"ok": False, "error": {"code": "TARGET_NOT_FOUND", "message": f"Could not resolve '{target_id}' to any known state"}}
+                raise TargetResolutionError(f"Could not resolve '{target_id}' to any known state")
+        except TargetResolutionError:
+            raise
         except Exception as exc:
-            if "INVALID_STATE" in getattr(exc, "args", ()):
-                raise
-            return {"ok": False, "error": {"code": "TARGET_RESOLUTION_FAILED", "message": f"Failed to resolve target '{target_id}': {exc}"}}
+            raise TargetResolutionError(f"Failed to resolve target '{target_id}': {exc}") from exc
 
     constraints = constraints or {}
     max_cost = constraints.get("max_cost")
@@ -156,7 +161,7 @@ def plan(
     if not candidates:
         if truncated:
             return {"ok": True, "path": None, "truncated": True}
-        return {"ok": False, "error": {"code": "NO_PATH", "message": "No path found from source to target"}}
+        raise NoPathError()
 
     candidates.sort(key=lambda x: x[0])
     top_paths: list[tuple[float, list[str], float, list[dict[str, Any]]]] = []
@@ -200,7 +205,7 @@ def learn(
     session_id: str = "",
 ) -> dict[str, Any]:
     if outcome not in ("success", "partial", "failure"):
-        return {"ok": False, "error": {"code": "INVALID_OUTCOME", "message": f"Expected 'success', 'partial', or 'failure', got '{outcome}'"}}
+        raise InvalidOutcomeError(outcome)
 
     event = conn.execute(
         """SELECT * FROM events WHERE node_id = ? AND event_type = 'acted'
@@ -208,16 +213,16 @@ def learn(
         (from_state, to_state),
     ).fetchone()
     if not event:
-        return {"ok": False, "error": {"code": "NO_EVENT", "message": f"No acted event found from {from_state} to {to_state}"}}
+        raise NoEventError(from_state, to_state)
 
     try:
         payload = json.loads(event["payload"])
     except (json.JSONDecodeError, TypeError):
-        return {"ok": False, "error": {"code": "INVALID_PAYLOAD", "message": "Event payload is not valid JSON"}}
+        raise InvalidPayloadError()
 
     action = payload.get("action")
     if not action:
-        return {"ok": False, "error": {"code": "NO_ACTION", "message": "Event payload missing action"}}
+        raise NoActionError()
 
     expected_cost = payload.get("expected_cost") or {"tokens": actual_cost, "risk": 0.0}
     edge = conn.execute(
@@ -225,7 +230,7 @@ def learn(
         (from_state, to_state, action),
     ).fetchone()
     if not edge:
-        return {"ok": False, "error": {"code": "NO_EDGE", "message": f"No edge from {from_state} to {to_state} with action '{action}'"}}
+        raise NoEdgeError(from_state, to_state, action)
 
     delta_tokens = actual_cost - expected_cost.get("tokens", actual_cost)
     src_node = conn.execute("SELECT project FROM nodes WHERE id = ?", (from_state,)).fetchone()
@@ -279,6 +284,9 @@ def learn(
             "previous_prob": old_prob, "new_prob": new_prob,
         }, session_id)
         _safe_release(conn, "learn_edge_tx", owned_learn)
+    except OpenPlanError:
+        _safe_rollback(conn, "learn_edge_tx", owned_learn)
+        raise
     except Exception:
         _safe_rollback(conn, "learn_edge_tx", owned_learn)
         raise

@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
+from openplan.core.errors import (
+    CycleDetectedError, InvalidActionError, InvalidStateError,
+    NoOptionsError, OpenPlanError, TargetNotFoundError,
+)
 from openplan.core.graph import _get_frontier_states, _invalidate_graph_cache
 
 
@@ -114,12 +118,12 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
         _record_event(conn, sid, project, "init", {"label": label or project}, session_id)
         _safe_release(conn, "init_tx", owned_init)
         return {"ok": True, "state_id": sid, "label": label or project, "created": True}
-    except sqlite3.IntegrityError as e:
+    except OpenPlanError:
         _safe_rollback(conn, "init_tx", owned_init)
-        return {"ok": False, "error": {"code": "DUPLICATE", "message": f"Project already exists: {e}"}}
-    except Exception as e:
+        raise
+    except Exception:
         _safe_rollback(conn, "init_tx", owned_init)
-        return {"ok": False, "error": {"code": "INIT_FAILED", "message": str(e)}}
+        raise
 
 
 def act(
@@ -137,27 +141,23 @@ def act(
     try:
         src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
         if not src:
-            _safe_rollback(conn, "act_tx", owned)
-            return {"ok": False, "error": {"code": "INVALID_STATE", "message": f"State {state_id} not found"}}
+            raise InvalidStateError(state_id)
         matching = conn.execute(
             "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)
         ).fetchall()
         if not matching:
-            _safe_rollback(conn, "act_tx", owned)
-            return {"ok": False, "error": {"code": "INVALID_ACTION", "message": f"No edge from {state_id} with action '{action}'"}}
+            raise InvalidActionError(state_id, action)
         if len(matching) > 1 and target:
             matching = [e for e in matching if e["target_id"] == target]
             if not matching:
-                _safe_rollback(conn, "act_tx", owned)
-                return {"ok": False, "error": {"code": "TARGET_NOT_FOUND", "message": f"No edge from {state_id} with action '{action}' targeting '{target}'"}}
+                raise TargetNotFoundError(state_id, action, target)
         elif len(matching) > 1 and not target:
             matching = sorted(matching, key=lambda e: (-e["prob"], e["cost_tokens"]))
         edge = dict(matching[0])
         target_id = edge["target_id"]
 
         if _detect_cycle(conn, state_id, target_id, action):
-            _safe_rollback(conn, "act_tx", owned)
-            return {"ok": False, "error": {"code": "CYCLE_DETECTED", "message": f"Acting {state_id} -> {target_id} would create a cycle"}}
+            raise CycleDetectedError(state_id, target_id)
 
         payload = {
             "action": action, "source": state_id, "target": target_id,
@@ -181,6 +181,9 @@ def act(
 
         frontier = _get_frontier_states(src["project"], conn, config)
         _safe_release(conn, "act_tx", owned)
+    except OpenPlanError:
+        _safe_rollback(conn, "act_tx", owned)
+        raise
     except Exception:
         _safe_rollback(conn, "act_tx", owned)
         raise
@@ -202,9 +205,9 @@ def branch(
 ) -> dict[str, Any]:
     src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
     if not src:
-        return {"ok": False, "error": {"code": "INVALID_STATE", "message": f"State {state_id} not found"}}
+        raise InvalidStateError(state_id)
     if not options:
-        return {"ok": False, "error": {"code": "NO_OPTIONS", "message": "At least one option required"}}
+        raise NoOptionsError()
 
     project = src["project"]
     now = _now()
@@ -238,6 +241,9 @@ def branch(
             "options": len(options), "states_created": states_created,
         }, session_id)
         _safe_release(conn, "branch_tx", owned_branch)
+    except OpenPlanError:
+        _safe_rollback(conn, "branch_tx", owned_branch)
+        raise
     except Exception:
         _safe_rollback(conn, "branch_tx", owned_branch)
         raise

@@ -74,6 +74,11 @@ END;
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    for col in ("idempotency_key TEXT", "session_id TEXT NOT NULL DEFAULT ''"):
+        try:
+            conn.execute(f"ALTER TABLE events_archive ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     try_init_vec0(conn)
 
 
