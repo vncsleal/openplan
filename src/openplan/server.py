@@ -255,16 +255,7 @@ async def main() -> None:
         if not handler:
             return err("UNKNOWN", f"Unknown tool: {name}")
         try:
-            result = await handler(arguments)
-            if _notification_queue:
-                if hasattr(result, "content") and result.content:
-                    import copy
-                    txt = result.content[0].text
-                    parsed = json.loads(txt)
-                    parsed.setdefault("_notifications", []).extend(_notification_queue)
-                    _notification_queue.clear()
-                    result.content[0].text = json.dumps(parsed)
-            return result
+            return await handler(arguments)
         except OpenPlanError as e:
             return err(e.code, e.message)
         except (KeyboardInterrupt, SystemExit):
