@@ -7,6 +7,7 @@ from typing import Any
 from openplan.core.errors import NoPathError
 from openplan.core.graph import _graph_health, _score_state
 from openplan.core.planner import plan
+from openplan.core.telemetry import get_telemetry
 
 
 def recommend(
@@ -73,6 +74,19 @@ def recommend(
     ).fetchone()["mv"] or 0
 
     threshold = config.get("activation_threshold", 0.5)
+    telemetry = get_telemetry()
+    conversion = telemetry.get_global_conversion_rate()
+    if conversion is not None and config.get("adaptive_weights", True):
+        rw = config.get("recommend_weights", {"orphan": 0.35, "visit": 0.30, "activation": 0.20, "stale": 0.15})
+        rw = dict(rw)
+        if conversion < 0.3:
+            rw["orphan"] = min(0.50, rw.get("orphan", 0.35) + 0.10)
+            rw["activation"] = max(0.10, rw.get("activation", 0.20) - 0.05)
+        elif conversion > 0.6:
+            rw["activation"] = min(0.35, rw.get("activation", 0.20) + 0.10)
+            rw["orphan"] = max(0.15, rw.get("orphan", 0.35) - 0.05)
+        config["recommend_weights"] = rw
+
     scored = []
     for r in node_rows:
         nid, label, activation = r["id"], r["label"], r["activation"]

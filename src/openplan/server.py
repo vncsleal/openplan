@@ -4,6 +4,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -12,11 +13,13 @@ _log = logging.getLogger("openplan")
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapability
+from mcp.types import CallToolResult, Resource, ReadResourceContents, ServerCapabilities, TextContent, ToolsCapability, ResourcesCapability
 
 from openplan.config import load_config
+from openplan.core.analytics import compute_analytics
 from openplan.core.errors import OpenPlanError
-from openplan.core.graph import search as _search
+from openplan.core.graph import _graph_health, search as _search
+from openplan.core.insight_propagation import propagate as _propagate
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
@@ -34,7 +37,6 @@ _read_lock = threading.Lock()
 _read_count = 0
 _notification_queue: list[dict[str, Any]] = []
 _notification_seen: set[str] = set()
-_last_cursor: dict[str, str] = {}
 _telemetry = get_telemetry()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
 if not _SESSION_ID:
@@ -72,6 +74,45 @@ def _write_lock_release() -> None:
     _write_lock.release()
 
 
+def _get_cursor(project: str) -> str | None:
+    if _conn is None:
+        return None
+    row = _conn.execute("SELECT cursor_state_id FROM sessions WHERE session_id = ? AND project = ?", (_SESSION_ID, project)).fetchone()
+    if row:
+        return row["cursor_state_id"]
+    return None
+
+
+def _set_cursor(project: str, state_id: str) -> None:
+    if _conn is None:
+        return
+    _conn.execute(
+        "INSERT OR REPLACE INTO sessions (session_id, project, cursor_state_id, created_at, updated_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        (_SESSION_ID, project, state_id),
+    )
+
+
+def _notif_hash(n: dict) -> str:
+    return f"{n.get('code', '')}:{n.get('project', '')}"
+
+
+def _get_fresh_notifications(project: str | None = None) -> list[dict]:
+    fresh = []
+    remaining = []
+    for n in list(_notification_queue):
+        h = _notif_hash(n)
+        if h in _notification_seen:
+            continue
+        if project and n.get("project") and n["project"] != project:
+            remaining.append(n)
+        else:
+            fresh.append(n)
+            _notification_seen.add(h)
+    _notification_queue.clear()
+    _notification_queue.extend(remaining)
+    return fresh
+
+
 def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
     enriched = dict(data)
     if project:
@@ -97,33 +138,8 @@ def _j(o: Any) -> str:
     return o.hex() if isinstance(o, bytes) else str(o)
 
 
-def _get_cursor(project: str) -> str | None:
-    return _last_cursor.get(project)
-
-
-def _set_cursor(project: str, state_id: str) -> None:
-    _last_cursor[project] = state_id
-
-
-def _notif_hash(n: dict) -> str:
-    return f"{n.get('code', '')}:{n.get('project', '')}"
-
-
-def _get_fresh_notifications(project: str | None = None) -> list[dict]:
-    fresh = []
-    remaining = []
-    for n in list(_notification_queue):
-        h = _notif_hash(n)
-        if h in _notification_seen:
-            continue
-        if project and n.get("project") and n["project"] != project:
-            remaining.append(n)
-        else:
-            fresh.append(n)
-            _notification_seen.add(h)
-    _notification_queue.clear()
-    _notification_queue.extend(remaining)
-    return fresh
+def _push_resource_notification(project: str) -> None:
+    _notification_queue.append({"type": "resource_updated", "uri": f"openplan://{project}/graph"})
 
 
 async def _handle_init(args: dict) -> CallToolResult:
@@ -133,6 +149,7 @@ async def _handle_init(args: dict) -> CallToolResult:
         result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
         if result.get("state_id"):
             _set_cursor(project, result["state_id"])
+            _push_resource_notification(project)
         return ok(result, project=project)
     finally:
         _write_lock_release()
@@ -160,6 +177,7 @@ async def _handle_act(args: dict) -> CallToolResult:
         result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
         if result.get("next_state"):
             _set_cursor(project, result["next_state"])
+            _push_resource_notification(project)
         return ok(result, project=project)
     finally:
         _write_lock_release()
@@ -191,14 +209,18 @@ async def _handle_search(args: dict) -> CallToolResult:
         conn = _get_conn()
         query = args.get("query")
         if not query:
-            projects = [dict(r) for r in conn.execute(
+            projects_data = [dict(r) for r in conn.execute(
                 "SELECT n.project, MIN(n.id) AS root_id, "
                 "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
                 "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
                 "LEFT JOIN nodes n2 ON n2.project = n.project "
                 "GROUP BY n.project ORDER BY state_count DESC"
             ).fetchall()]
-            return ok({"query": None, "projects": projects, "count": len(projects)})
+            conv = _telemetry.get_global_conversion_rate()
+            result: dict[str, Any] = {"query": None, "projects": projects_data, "count": len(projects_data)}
+            if conv is not None:
+                result["telemetry"] = {"global_conversion_rate": conv}
+            return ok(result)
         result = _search(query, conn)
         return ok(result)
     finally:
@@ -216,6 +238,33 @@ HANDLERS = {
 @app.list_tools()
 async def list_tools() -> list:
     return get_tools()
+
+
+@app.list_resources()
+async def list_resources() -> list[Resource]:
+    conn = _get_conn()
+    resources = [Resource(uri="openplan://projects", name="All Projects", description="All projects with state counts", mimeType="application/json")]
+    resources.append(Resource(uri="openplan://analytics", name="Analytics", description="Cross-project analytics and anomaly detection", mimeType="application/json"))
+    for row in conn.execute("SELECT DISTINCT project FROM nodes").fetchall():
+        p = row["project"]
+        resources.append(Resource(uri=f"openplan://{p}/graph", name=f"{p} Graph", description=f"Full graph for {p}", mimeType="application/json"))
+    return resources
+
+
+@app.read_resource()
+async def read_resource(uri: str) -> list[ReadResourceContents]:
+    conn = _get_conn()
+    if uri == "openplan://projects":
+        projects = [dict(r) for r in conn.execute("SELECT DISTINCT project, COUNT(*) AS state_count FROM nodes GROUP BY project").fetchall()]
+        return [ReadResourceContents(content=json.dumps(projects), mimeType="application/json")]
+    if uri == "openplan://analytics":
+        return [ReadResourceContents(content=json.dumps(compute_analytics(conn)), mimeType="application/json")]
+    m = re.match(r"openplan://(.+?)/graph", uri)
+    if m:
+        project = m.group(1)
+        health = _graph_health(project, conn)
+        return [ReadResourceContents(content=json.dumps(health), mimeType="application/json")]
+    return [ReadResourceContents(content=json.dumps({"error": "not found"}), mimeType="application/json")]
 
 
 def _shutdown() -> None:
@@ -236,6 +285,8 @@ async def main() -> None:
 
     notifs = _maintenance_cycle(_conn, _config, _write_lock)
     _notification_queue.extend(notifs)
+
+    _propagate(_conn, _config)
 
     maintenance_thread = threading.Thread(
         target=_maintenance_loop,
@@ -267,8 +318,8 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.7",
-                capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
+                server_version="0.2.0",
+                capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )
 
@@ -279,6 +330,7 @@ def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue
         import time
         time.sleep(interval)
         notifs = _maintenance_cycle(conn, config, write_lock)
+        _propagate(conn, config)
         queue.extend(notifs)
 
 

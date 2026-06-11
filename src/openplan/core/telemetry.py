@@ -102,6 +102,19 @@ class TelemetryTracker:
                 return None
             return {"followed": total_followed, "ignored": total_ignored, "rate": round(total_followed / total_suggestions, 2)}
 
+    def get_global_conversion_rate(self) -> float | None:
+        with self._lock:
+            total_f = sum(r["followed"] for rec in self._suggestion_hits.values() for r in rec.values())
+            total_i = sum(r["ignored"] for rec in self._suggestion_hits.values() for r in rec.values())
+            total = total_f + total_i
+            return total_f / total if total > 0 else None
+
+    def get_tool_conversion_rate(self, tool: str) -> float | None:
+        with self._lock:
+            total_f = sum(rec.get(tool, {}).get("followed", 0) for rec in self._suggestion_hits.values())
+            total_i = sum(rec.get(tool, {}).get("ignored", 0) for rec in self._suggestion_hits.values())
+            total = total_f + total_i
+            return total_f / total if total > 0 else None
 
     def set_conn(self, conn: sqlite3.Connection) -> None:
         self._conn = conn

@@ -9,6 +9,7 @@ _CONFIG_SCHEMA_KEYS: set[str] = {
     "plan_limit", "expansion_limit", "avg_edge_cost", "heuristic_scale",
     "activation_weights", "learning", "embedding", "page_rank",
     "stale_branch_hours", "recommend_weights", "maintenance_interval_minutes",
+    "adaptive_weights", "insight_similarity_threshold",
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {

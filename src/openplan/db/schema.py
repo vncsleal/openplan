@@ -69,6 +69,27 @@ END;
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE OF label ON nodes BEGIN
     UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
 END;
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id     TEXT NOT NULL DEFAULT '',
+    project        TEXT NOT NULL,
+    cursor_state_id TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (session_id, project)
+);
+
+CREATE TABLE IF NOT EXISTS cross_project_insights (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_project TEXT NOT NULL,
+    source_state   TEXT NOT NULL,
+    target_project TEXT NOT NULL,
+    target_state   TEXT NOT NULL,
+    insight_text   TEXT NOT NULL,
+    similarity     REAL NOT NULL DEFAULT 0.0,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cpi_target ON cross_project_insights(target_project, target_state);
 """
 
 
