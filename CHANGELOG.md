@@ -15,5 +15,4 @@
 - Cycle detection on every act() transition.
 - FTS5 full-text search with AFTER UPDATE trigger.
 - Event archival and orphan state merging (compress tool).
-- v3 → v0.1 migration script (openplan-migrate).
 - 55 tests across all tools and scales.

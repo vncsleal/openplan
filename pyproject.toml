@@ -41,7 +41,6 @@ Changelog = "https://github.com/anomalyco/opencode/blob/main/docs/workflow/openp
 
 [project.scripts]
 openplan-server = "openplan.server:main"
-openplan-migrate = "openplan.migrate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -115,14 +115,6 @@ pytest tests/ -v
 # embedding, export, learn, observe, plan, scale
 ```
 
-## Migration from v3.0
-
-```bash
-openplan-v3-migrate --db ~/.local/share/openplan/planner_v3.db
-```
-
-Adds `session_id`, `idempotency_key` columns and populates keys for existing rows.
-
 ## Why State Space Navigation?
 
 OpenPlan v2 asked the AI to translate its thinking into human structures (tasks, milestones, goals). v3 meets the AI where it is — a state space navigator. The core abstraction is a directed graph of states with probabilistic edges, not discrete units of work. Planning is A* pathfinding. Learning is automatic weight calibration. The AI doesn't manage workflows — it navigates a space.
