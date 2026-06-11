@@ -13,19 +13,6 @@ def _xml_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
 
 
-def archive_events(conn: sqlite3.Connection, older_than_days: int = 30) -> dict[str, int]:
-    cutoff = datetime.now(timezone.utc).timestamp() - older_than_days * 86400
-    cutoff_str = datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    conn.execute(
-        "INSERT OR IGNORE INTO events_archive SELECT * FROM events WHERE created_at < ?",
-        (cutoff_str,),
-    )
-    archived = conn.execute("SELECT changes() AS cnt").fetchone()["cnt"]
-    conn.execute("DELETE FROM events WHERE created_at < ?", (cutoff_str,))
-    deleted = conn.execute("SELECT changes() AS cnt").fetchone()["cnt"]
-    return {"archived": archived, "deleted": deleted}
-
-
 def export(project: str, conn: sqlite3.Connection, fmt: str = "json") -> dict[str, Any]:
     if fmt == "matrix":
         edges = conn.execute(

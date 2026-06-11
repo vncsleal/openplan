@@ -207,6 +207,8 @@ async def _handle_init(args: dict) -> CallToolResult:
             _get_conn(),
             session_id=_SESSION_ID,
         )
+        if not result.get("ok", True):
+            return err(result["error"]["code"], result["error"]["message"])
         return ok(result)
     finally:
         _write_lock_release()
@@ -272,11 +274,8 @@ async def list_tools() -> list:
 
 def _shutdown() -> None:
     global _conn
-    try:
-        from openplan.core.embedding import shutdown_embeddings
-        shutdown_embeddings()
-    except Exception:
-        pass
+    from openplan.core.embedding import shutdown_embeddings
+    shutdown_embeddings()
     if _conn is not None:
         _conn.close()
 
@@ -288,11 +287,8 @@ async def main() -> None:
     init_db(_conn)
     atexit.register(_shutdown)
 
-    try:
-        from openplan.core.embedding import warmup_embeddings
-        warmup_embeddings()
-    except Exception:
-        pass
+    from openplan.core.embedding import warmup_embeddings
+    warmup_embeddings()
 
     @app.call_tool()
     async def call_tool(name: str, arguments: dict) -> CallToolResult:
@@ -305,8 +301,6 @@ async def main() -> None:
             raise
         except Exception as e:
             return err("INTERNAL_ERROR", str(e))
-
-    _project_list_cache_version = 0
 
     async with stdio_server() as (read, write):
         await app.run(

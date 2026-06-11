@@ -13,13 +13,6 @@ import numpy as np
 _EMBEDDING_DIMENSIONS: int = 384
 
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    denom = (np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
-
-
 class EmbeddingProvider:
     """Wraps fastembed.TextEmbedding, runs encode calls in a thread pool executor."""
 
@@ -73,13 +66,6 @@ class EmbeddingProvider:
     def _sync_encode(self, texts: list[str]) -> np.ndarray:
         results: list[np.ndarray] = list(self._model.embed(texts))
         return np.array(results, dtype=np.float32)
-
-    def similarity(self, text_a: str, text_b: str) -> float:
-        """Cosine similarity between two text strings."""
-        emb = self.encode([text_a, text_b])
-        if emb is None or emb.shape[0] < 2:
-            return 0.0
-        return _cosine_similarity(emb[0], emb[1])
 
     def shutdown(self) -> None:
         if self._executor:

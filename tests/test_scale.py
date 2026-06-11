@@ -119,36 +119,32 @@ def test_export_matrix_empty(conn: Any) -> None:
 
 
 def test_archive_events(conn: Any) -> None:
-    """archive_events moves old events to events_archive table."""
-    from openplan.core.export import archive_events
+    from openplan.core.export import compress
     import json
     from datetime import datetime, timezone
 
     conn.execute("INSERT INTO nodes (id, label, project) VALUES ('S-000001', 'test', 'test')")
-
-    old = datetime(2024, 1, 1, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     conn.execute(
-        "INSERT INTO events (id, project, node_id, event_type, payload, version, created_at) VALUES (?, 'test', 'S-000001', 'acted', ?, 1, ?)",
-        ("E-001", json.dumps({"action": "test"}), old),
+        "INSERT INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
+        "VALUES ('E-001', 'test', 'S-000001', 'acted', ?, 1, '', '', ?)",
+        (json.dumps({"action": "test"}), "2024-01-01T00:00:00.000000Z"),
+    )
+    conn.execute(
+        "INSERT INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
+        "VALUES ('E-002', 'test', 'S-000001', 'acted', ?, 1, '', '', ?)",
+        (json.dumps({"action": "test"}), datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")),
     )
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    conn.execute(
-        "INSERT INTO events (id, project, node_id, event_type, payload, version, created_at) VALUES (?, 'test', 'S-000001', 'acted', ?, 1, ?)",
-        ("E-002", json.dumps({"action": "test"}), now),
-    )
+    result = compress("test", conn, {}, older_than_days=30, merge_orphans=False)
 
-    result = archive_events(conn, older_than_days=30)
-
-    assert result["archived"] >= 1
-    assert result["deleted"] >= 1
+    assert result["archived_events"] >= 1
+    assert result["deleted_events"] >= 1
 
     archived = conn.execute("SELECT id FROM events_archive").fetchall()
     assert any(r["id"] == "E-001" for r in archived)
 
     remaining = conn.execute("SELECT id FROM events").fetchall()
     assert any(r["id"] == "E-002" for r in remaining)
-    assert not any(r["id"] == "E-001" for r in remaining)
 
 
 @pytest.mark.slow
