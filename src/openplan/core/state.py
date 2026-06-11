@@ -9,7 +9,7 @@ from typing import Any
 from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
 from openplan.core.errors import (
     CycleDetectedError, InvalidActionError, InvalidStateError,
-    NoOptionsError, OpenPlanError, TargetNotFoundError,
+    NoOptionsError, OpenPlanError,
 )
 from openplan.core.graph import _get_frontier_states, _invalidate_graph_cache
 
@@ -188,11 +188,8 @@ def act(
         src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
         if not src:
             raise InvalidStateError(state_id)
-        matching = conn.execute(
-            "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)
-        ).fetchall()
         target_id = target
-        if not matching and target:
+        if target:
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
             if not tgt:
                 target_id = _ensure_node(src["project"], target, conn)
@@ -200,20 +197,23 @@ def act(
                 "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
                 (state_id, target_id, action, _now(), _now()),
             )
+        else:
             matching = conn.execute(
-                "SELECT * FROM edges WHERE source_id = ? AND target_id = ? AND action = ?",
-                (state_id, target_id, action),
+                "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)
             ).fetchall()
-        elif not matching:
-            raise InvalidActionError(state_id, action)
-        if len(matching) > 1 and target_id:
-            matching = [e for e in matching if e["target_id"] == target_id]
             if not matching:
-                raise TargetNotFoundError(state_id, action, target_id)
-        elif len(matching) > 1 and not target_id:
-            matching = sorted(matching, key=lambda e: (-e["prob"], e["cost_tokens"]))
-        edge = dict(matching[0])
-        target_id = edge["target_id"]
+                raise InvalidActionError(state_id, action)
+            if len(matching) > 1:
+                matching = sorted(matching, key=lambda e: (-e["prob"], e["cost_tokens"]))
+            target_id = dict(matching[0])["target_id"]
+
+        edge = conn.execute(
+            "SELECT * FROM edges WHERE source_id = ? AND target_id = ? AND action = ?",
+            (state_id, target_id, action),
+        ).fetchone()
+        if not edge:
+            raise InvalidActionError(state_id, action)
+        edge = dict(edge)
 
         if _detect_cycle(conn, state_id, target_id, action):
             raise CycleDetectedError(state_id, target_id)
