@@ -107,13 +107,13 @@ _TOOLS: list[MCPTool] = [
         outputSchema={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
+                "query": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "projects": {"type": "array"},
                 "states": {"type": "array"},
                 "insights": {"type": "array"},
                 "count": {"type": "integer"},
             },
-            "required": ["query", "projects", "count"],
+            "required": ["projects", "count"],
         },
     ),
 ]

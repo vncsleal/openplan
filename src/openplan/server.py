@@ -172,7 +172,7 @@ async def _handle_search(args: dict) -> CallToolResult:
                 "LEFT JOIN nodes n2 ON n2.project = n.project "
                 "GROUP BY n.project ORDER BY state_count DESC"
             ).fetchall()]
-            return ok({"projects": projects, "count": len(projects)})
+            return ok({"query": None, "projects": projects, "count": len(projects)})
         result = _search(query, conn)
         return ok(result)
     finally:
