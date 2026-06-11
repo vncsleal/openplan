@@ -16,9 +16,7 @@ from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapa
 
 from openplan.config import load_config
 from openplan.core.errors import OpenPlanError
-from openplan.core.export import compress as _compress
 from openplan.core.graph import search as _search
-from openplan.core.graph import diagnostics as _diagnostics
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
