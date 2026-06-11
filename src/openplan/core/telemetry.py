@@ -14,39 +14,38 @@ class TelemetryTracker:
         self._window = 50
 
     def record(self, session_id: str, tool: str, args: dict[str, Any] | None = None) -> None:
-        if not session_id:
-            return
+        sid = session_id or "_default"
         with self._lock:
-            if session_id not in self._sessions:
-                self._sessions[session_id] = deque(maxlen=self._window)
-                self._suggestion_hits[session_id] = {}
-            self._sessions[session_id].append((tool, args or {}))
-            self._check_suggestion_match(session_id, tool)
+            if sid not in self._sessions:
+                self._sessions[sid] = deque(maxlen=self._window)
+                self._suggestion_hits[sid] = {}
+            self._sessions[sid].append((tool, args or {}))
+            self._check_suggestion_match(sid, tool)
 
     def record_suggestion(self, session_id: str, suggestion: dict[str, Any]) -> None:
-        if not session_id:
-            return
+        sid = session_id or "_default"
         with self._lock:
-            self._last_suggestion[session_id] = suggestion
+            self._last_suggestion[sid] = suggestion
 
-    def _check_suggestion_match(self, session_id: str, tool: str) -> None:
-        suggestion = self._last_suggestion.get(session_id)
+    def _check_suggestion_match(self, sid: str, tool: str) -> None:
+        suggestion = self._last_suggestion.get(sid)
         if suggestion:
             suggested_tool = suggestion.get("tool")
         else:
             suggested_tool = None
         if suggested_tool:
-            record = self._suggestion_hits[session_id].setdefault(suggested_tool, {"followed": 0, "ignored": 0})
+            record = self._suggestion_hits[sid].setdefault(suggested_tool, {"followed": 0, "ignored": 0})
             if tool == suggested_tool:
                 record["followed"] += 1
             else:
                 record["ignored"] += 1
 
     def get_session_stats(self, session_id: str) -> dict[str, Any]:
-        if not session_id or session_id not in self._sessions:
+        sid = session_id or "_default"
+        if sid not in self._sessions:
             return {"calls": 0}
         with self._lock:
-            calls = list(self._sessions[session_id])
+            calls = list(self._sessions[sid])
             tool_counts = Counter(t[0] for t in calls)
             recent = [t[0] for t in calls[-10:]]
             repeated_observes = 0
@@ -58,12 +57,12 @@ class TelemetryTracker:
             stuck = repeated_observes >= 3
             total_followed = 0
             total_ignored = 0
-            for tool_rec in self._suggestion_hits.get(session_id, {}).values():
+            for tool_rec in self._suggestion_hits.get(sid, {}).values():
                 total_followed += tool_rec["followed"]
                 total_ignored += tool_rec["ignored"]
             total_suggestions = total_followed + total_ignored
             result: dict[str, Any] = {
-                "calls": total,
+                "calls": len(calls),
                 "tool_counts": dict(tool_counts.most_common(5)),
             }
             if stuck:
@@ -78,18 +77,19 @@ class TelemetryTracker:
             return result
 
     def get_suggestion_conversion(self, session_id: str) -> dict[str, Any] | None:
-        if not session_id or session_id not in self._suggestion_hits:
+        sid = session_id or "_default"
+        if sid not in self._suggestion_hits:
             return None
         with self._lock:
             total_followed = 0
             total_ignored = 0
-            for tool_rec in self._suggestion_hits[session_id].values():
+            for tool_rec in self._suggestion_hits[sid].values():
                 total_followed += tool_rec["followed"]
                 total_ignored += tool_rec["ignored"]
-            total = total_followed + total_ignored
-            if total == 0:
+            total_suggestions = total_followed + total_ignored
+            if total_suggestions == 0:
                 return None
-            return {"followed": total_followed, "ignored": total_ignored, "rate": round(total_followed / total, 2)}
+            return {"followed": total_followed, "ignored": total_ignored, "rate": round(total_followed / total_suggestions, 2)}
 
 
 _telemetry = TelemetryTracker()
