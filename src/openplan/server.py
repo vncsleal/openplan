@@ -124,16 +124,7 @@ async def _handle_act(args: dict) -> CallToolResult:
             cursor = root["id"] if root else None
         if not cursor:
             return err("NO_CURSOR", f"No position in {project} — call init first")
-        target = args.get("target")
-        target_id = target
-        if target and not conn.execute("SELECT 1 FROM nodes WHERE id = ?", (target,)).fetchone():
-            from openplan.core.state import generate_id
-            target_id = generate_id(project, conn)
-            conn.execute(
-                "INSERT INTO nodes (id, label, project, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (target_id, target, project, "", ""),
-            )
-        result = _act(cursor, args["action"], conn, _config, target=target_id, evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
+        result = _act(cursor, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
         if result.get("next_state"):
             _set_cursor(project, result["next_state"])
         return ok(result)
