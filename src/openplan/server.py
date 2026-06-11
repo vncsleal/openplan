@@ -80,7 +80,7 @@ def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
         cursor = _get_cursor(project)
         if cursor:
             enriched["cursor"] = cursor
-    notifs = _get_fresh_notifications()
+    notifs = _get_fresh_notifications(project)
     result_str = json.dumps({"ok": True, "data": enriched, **({"_notifications": notifs} if notifs else {})}, default=_j)
     return CallToolResult(
         content=[TextContent(type="text", text=result_str)],
@@ -111,14 +111,20 @@ def _notif_hash(n: dict) -> str:
     return f"{n.get('code', '')}:{n.get('project', '')}"
 
 
-def _get_fresh_notifications() -> list[dict]:
+def _get_fresh_notifications(project: str | None = None) -> list[dict]:
     fresh = []
+    remaining = []
     for n in list(_notification_queue):
         h = _notif_hash(n)
-        if h not in _notification_seen:
+        if h in _notification_seen:
+            continue
+        if project and n.get("project") and n["project"] != project:
+            remaining.append(n)
+        else:
             fresh.append(n)
             _notification_seen.add(h)
     _notification_queue.clear()
+    _notification_queue.extend(remaining)
     return fresh
 
 
