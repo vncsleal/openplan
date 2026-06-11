@@ -137,18 +137,41 @@ class ActivationContext:
             return 1.0
         return 0.5
 
+    def _compute_visit_ratio(self, state_id: str, conn: sqlite3.Connection) -> float:
+        row = conn.execute("SELECT props FROM nodes WHERE id = ?", (state_id,)).fetchone()
+        if not row:
+            return 0.0
+        try:
+            props = json.loads(row["props"])
+        except (json.JSONDecodeError, TypeError):
+            return 0.0
+        my_visits = props.get("visit_count", 0)
+        if my_visits == 0:
+            return 0.0
+        project_row = conn.execute("SELECT project FROM nodes WHERE id = ?", (state_id,)).fetchone()
+        if not project_row:
+            return 0.0
+        max_row = conn.execute(
+            "SELECT MAX(json_extract(props, '$.visit_count')) AS max_visits FROM nodes WHERE project = ?",
+            (project_row["project"],),
+        ).fetchone()
+        max_visits = max_row["max_visits"] if max_row and max_row["max_visits"] else 0
+        return min(my_visits / max_visits, 1.0) if max_visits > 0 else 0.0
+
     def _compute_activation(self, state_id: str, conn: sqlite3.Connection, config: dict[str, Any]) -> float:
         weights = config.get("activation_weights", {})
-        w_in = weights.get("in_degree", 0.4)
-        w_frontier = weights.get("frontier", 0.3)
+        w_in = weights.get("in_degree", 0.35)
+        w_frontier = weights.get("frontier", 0.25)
         w_recency = weights.get("recency", 0.2)
         w_boost = weights.get("boost", 0.1)
+        w_visit = weights.get("visit", 0.1)
         in_degree_ratio = self._compute_in_degree_ratio(state_id, conn)
         frontier_ratio = self._compute_frontier_ratio(state_id, conn, config)
         stale_days = config.get("stale_days", 2)
         recency = self._compute_recency(state_id, conn, stale_days)
         agent_boost = self._compute_agent_boost(state_id, conn)
-        return w_in * in_degree_ratio + w_frontier * frontier_ratio + w_recency * recency + w_boost * agent_boost
+        visit_ratio = self._compute_visit_ratio(state_id, conn)
+        return w_in * in_degree_ratio + w_frontier * frontier_ratio + w_recency * recency + w_boost * agent_boost + w_visit * visit_ratio
 
     def _precompute_targets(self, state_id: str, conn: sqlite3.Connection, config: dict[str, Any]) -> None:
         stack = [(state_id, 0)]

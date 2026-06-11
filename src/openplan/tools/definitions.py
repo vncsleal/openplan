@@ -34,6 +34,7 @@ _OBSERVE_OUTPUT: dict = {
         "states": {"type": "array", "items": {"type": "object"}},
         "recommended": {"type": "string"},
         "graph": {"type": "object"},
+        "suggestion_conversion": {"type": "object"},
     },
 }
 
@@ -247,8 +248,7 @@ _TOOLS: list[MCPTool] = [
     t(
         "diagnostics",
         "Graph Health Metrics",
-        "Return graph health metrics for a project. Read-only, used by improvement sessions "
-        "to assess orphan states, calibration rates, action diversity, and graph depth. "
+        "Return graph health metrics for a project, including tool usage patterns. "
         "When auto_fix=True, attempts to auto-resolve the highest-severity issues.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
@@ -266,6 +266,7 @@ _TOOLS: list[MCPTool] = [
                 "orphans": {"type": "array"},
                 "orphan_count": {"type": "integer"},
                 "issues": {"type": "array"},
+                "usage": {"type": "object"},
             },
             "required": ["project"],
         },

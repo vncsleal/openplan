@@ -87,6 +87,19 @@ def _safe_rollback(conn: sqlite3.Connection, name: str, owned: bool) -> None:
             pass
 
 
+def _increment_visit(state_id: str, conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT props FROM nodes WHERE id = ?", (state_id,)).fetchone()
+    if not row:
+        return
+    try:
+        props = json.loads(row["props"])
+    except (json.JSONDecodeError, TypeError):
+        props = {}
+    count = props.get("visit_count", 0)
+    props["visit_count"] = count + 1
+    conn.execute("UPDATE nodes SET props = ? WHERE id = ?", (json.dumps(props), state_id))
+
+
 def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> None:
     wh_raw = edge.get("weight_history") or "[]"
     try:
@@ -202,6 +215,7 @@ def act(
             "cost_actual": {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)},
         }
         _record_event(conn, state_id, src["project"], "acted", payload, session_id)
+        _increment_visit(target_id, conn)
         _auto_calibrate(conn, edge, target_id)
         _prune_stale_branches(state_id, conn, session_id)
         mark_dirty(state_id, conn)

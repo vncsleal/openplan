@@ -14,10 +14,11 @@ _CONFIG_SCHEMA_KEYS: set[str] = {
 DEFAULT_CONFIG: dict[str, Any] = {
     "stale_days": 2,
     "activation_weights": {
-        "in_degree": 0.4,
-        "frontier": 0.3,
+        "in_degree": 0.35,
+        "frontier": 0.25,
         "recency": 0.2,
         "boost": 0.1,
+        "visit": 0.1,
     },
     "activation_threshold": 0.5,
 }

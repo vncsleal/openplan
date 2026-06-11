@@ -17,6 +17,7 @@ from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapa
 
 from openplan.config import load_config
 from openplan.core.errors import OpenPlanError
+from openplan.core.telemetry import get_telemetry
 from openplan.core.state import act as _act
 from openplan.core.state import init_project as _init
 from openplan.core.state import branch as _branch
@@ -70,6 +71,7 @@ def _write_lock_release() -> None:
     _write_lock.release()
 
 
+_telemetry = get_telemetry()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
 if not _SESSION_ID:
     _log.warning("OPENCODE_SESSION_ID not set — session tracking disabled")
@@ -115,6 +117,12 @@ async def _handle_observe(args: dict) -> CallToolResult:
             config=_config,
             session_id=_SESSION_ID,
         )
+        suggestion = result.get("suggested_next_action")
+        if suggestion:
+            _telemetry.record_suggestion(_SESSION_ID, suggestion)
+        conversion = _telemetry.get_suggestion_conversion(_SESSION_ID)
+        if conversion:
+            result["suggestion_conversion"] = conversion
         return ok(result)
     finally:
         _read_lock_release()
@@ -195,6 +203,9 @@ async def _handle_diagnostics(args: dict) -> CallToolResult:
             config=_config,
             auto_fix=args.get("auto_fix", False),
         )
+        usage = _telemetry.get_session_stats(_SESSION_ID)
+        if usage.get("calls", 0) > 0:
+            result["usage"] = usage
         return ok(result)
     finally:
         _read_lock_release()
@@ -265,6 +276,7 @@ async def main() -> None:
         handler = HANDLERS.get(name)
         if not handler:
             return err("UNKNOWN", f"Unknown tool: {name}")
+        _telemetry.record(_SESSION_ID, name, dict((k, arguments[k]) for k in ("project", "state", "action", "scope", "from_id", "target_id") if k in arguments))
         try:
             return await handler(arguments)
         except OpenPlanError as e:
@@ -280,7 +292,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.3",
+                server_version="0.1.4",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )
