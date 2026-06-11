@@ -94,7 +94,7 @@ def test_observe_rank_empty(conn: Any, config: dict[str, Any]) -> None:
 
 def test_export_matrix_format(conn: Any) -> None:
     """export(format='matrix') returns sparse edge list."""
-    from openplan.core.graph import export
+    from openplan.core.export import export
 
     _populate_graph(conn, nodes=5, edges_per_node=2)
 
@@ -111,7 +111,7 @@ def test_export_matrix_format(conn: Any) -> None:
 
 def test_export_matrix_empty(conn: Any) -> None:
     """export(format='matrix') on empty project returns empty list."""
-    from openplan.core.graph import export
+    from openplan.core.export import export
 
     result = export("test", conn, fmt="matrix")
     assert result["format"] == "matrix"
@@ -120,7 +120,7 @@ def test_export_matrix_empty(conn: Any) -> None:
 
 def test_archive_events(conn: Any) -> None:
     """archive_events moves old events to events_archive table."""
-    from openplan.core.graph import archive_events
+    from openplan.core.export import archive_events
     import json
     from datetime import datetime, timezone
 
@@ -154,7 +154,7 @@ def test_archive_events(conn: Any) -> None:
 @pytest.mark.slow
 def test_plan_5k_scale(conn: Any) -> None:
     """plan returns in < 5s with 5000 synthetic nodes (not <100ms due to SQLite)."""
-    from openplan.core.graph import plan
+    from openplan.core.planner import plan
 
     _populate_graph(conn, nodes=5000, edges_per_node=3)
 

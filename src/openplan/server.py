@@ -16,16 +16,16 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapability
 
 from openplan.config import load_config
-from openplan.core.graph import act as _act
-from openplan.core.graph import init_project as _init
-from openplan.core.graph import branch as _branch
-from openplan.core.graph import compress as _compress
+from openplan.core.state import act as _act
+from openplan.core.state import init_project as _init
+from openplan.core.state import branch as _branch
+from openplan.core.export import compress as _compress
+from openplan.core.export import export as _export
+from openplan.core.export import project_list as _project_list
 from openplan.core.graph import diagnostics as _diagnostics
-from openplan.core.graph import export as _export
-from openplan.core.graph import learn as _learn
 from openplan.core.graph import observe as _observe
-from openplan.core.graph import plan as _plan
-from openplan.core.graph import project_list as _project_list
+from openplan.core.planner import learn as _learn
+from openplan.core.planner import plan as _plan
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.tools.definitions import get_tools

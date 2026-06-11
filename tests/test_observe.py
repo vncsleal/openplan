@@ -6,7 +6,8 @@ import sqlite3
 import pytest
 
 from openplan.core.activation import get_activation, reset_cache
-from openplan.core.graph import generate_id, observe
+from openplan.core.state import generate_id
+from openplan.core.graph import observe
 from openplan.db.schema import init_db
 
 

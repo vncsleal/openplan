@@ -196,7 +196,7 @@ def test_observe_query_embedding(conn: sqlite3.Connection) -> None:
 
 def test_plan_natural_language_target(conn: sqlite3.Connection) -> None:
     """plan resolves non-ID target via embedding similarity."""
-    from openplan.core.graph import plan
+    from openplan.core.planner import plan
 
     config = {
         "activation_threshold": 0.5,

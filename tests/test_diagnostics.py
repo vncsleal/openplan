@@ -5,7 +5,8 @@ import sqlite3
 
 import pytest
 
-from openplan.core.graph import branch, diagnostics, generate_id
+from openplan.core.state import branch, generate_id
+from openplan.core.graph import diagnostics
 from openplan.db.schema import init_db
 
 
