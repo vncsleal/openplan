@@ -62,19 +62,21 @@ def _observe_search(project: str, query: str, conn: sqlite3.Connection) -> dict[
     states = [dict(r) for r in rows]
     insights = []
     for r in conn.execute(
-        "SELECT payload FROM events WHERE project = ? AND event_type = 'calibrated'",
+        "SELECT e.source_id, e.target_id, e.weight_history FROM edges e "
+        "JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
         (project,),
     ).fetchall():
         try:
-            payload = json.loads(r["payload"])
-            if query.lower() in payload.get("insight", "").lower():
-                insights.append({"source": "insight", "text": payload.get("insight", ""), "from_state": payload.get("from"), "to_state": payload.get("to")})
+            wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
+            for entry in wh:
+                text = entry.get("insight", "")
+                if query.lower() in text.lower():
+                    insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"]})
         except (json.JSONDecodeError, TypeError):
             pass
 
-    result: dict[str, Any] = {"mode": "similarity", "query": query, "states": states, "count": len(states)}
+    result: dict[str, Any] = {"mode": "search" if insights else "similarity", "query": query, "states": states, "count": len(states)}
     if insights:
-        result["mode"] = "search"
         result["insights"] = insights
     return result
 
