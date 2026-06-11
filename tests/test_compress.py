@@ -76,7 +76,6 @@ def test_compress_archive_events(conn: sqlite3.Connection, config: dict) -> None
     old_event = conn.execute("SELECT * FROM events WHERE event_type = 'branched'").fetchone()
     assert old_event is not None
 
-    # Move the event into the past
     conn.execute(
         "UPDATE events SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?",
         (old_event["id"],),
@@ -86,11 +85,9 @@ def test_compress_archive_events(conn: sqlite3.Connection, config: dict) -> None
     assert result["ok"] is True
     assert result["archived_events"] >= 1
 
-    # Event should be gone from main table
     remaining = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE event_type = 'branched'").fetchone()["cnt"]
     assert remaining == 0
 
-    # Event should be in archive
     archived = conn.execute("SELECT COUNT(*) AS cnt FROM events_archive WHERE event_type = 'branched'").fetchone()["cnt"]
     assert archived >= 1
 
@@ -128,7 +125,6 @@ def test_compress_orphan_merge(conn: sqlite3.Connection, config: dict) -> None:
     assert result["ok"] is True
     assert result["merged_orphans"] >= 2
 
-    # Orphans should now have edges
     for oid in (orphan1, orphan2):
         edge = conn.execute(
             "SELECT * FROM edges WHERE source_id = ? AND target_id = ? AND action = 'merged'",

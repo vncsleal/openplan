@@ -60,12 +60,12 @@ def test_diagnostics_flat_tree(conn: sqlite3.Connection, config: dict) -> None:
 
     result = diagnostics("test", conn)
 
-    assert result["overview"]["states"] == 4  # root + 3 branches
+    assert result["overview"]["states"] == 4
     assert result["overview"]["edges"] == 3
-    assert result["overview"]["max_depth"] == 1  # root → leaf
-    assert result["overview"]["leaf_states"] == 3  # all 3 branches are leaves
+    assert result["overview"]["max_depth"] == 1
+    assert result["overview"]["leaf_states"] == 3
     assert result["overview"]["root_states"] == 1
-    assert len(result["actions_used"]) == 3  # implement, research, review
+    assert len(result["actions_used"]) == 3
     assert result["orphan_count"] == 3
     assert result["health"]["action_types"] == 3
     assert result["health"]["calibrated_edges"] == 0
@@ -78,7 +78,6 @@ def test_diagnostics_deep_tree(conn: sqlite3.Connection, config: dict) -> None:
     r2 = _make_node(conn, "test", "Level 2")
     _ = _make_node(conn, "test", "Level 3")
 
-    # Root → L1 → L2 → L3
     conn.execute(
         "INSERT INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, 'implement', 1000, 0.1, 0.8, datetime('now'), datetime('now'))",
         (r0, r1),
@@ -92,7 +91,7 @@ def test_diagnostics_deep_tree(conn: sqlite3.Connection, config: dict) -> None:
 
     assert result["overview"]["states"] == 4
     assert result["overview"]["edges"] == 2
-    assert result["overview"]["max_depth"] == 2  # root→L1→L2 (L3 is a leaf at depth 2)
-    assert result["overview"]["leaf_states"] == 2  # L2 and L3
-    assert len(result["actions_used"]) == 2  # implement, review
-    assert not any(i["code"] == "SHALLOW_GRAPH" for i in result["issues"])  # depth=2 is ok
+    assert result["overview"]["max_depth"] == 2
+    assert result["overview"]["leaf_states"] == 2
+    assert len(result["actions_used"]) == 2
+    assert not any(i["code"] == "SHALLOW_GRAPH" for i in result["issues"])

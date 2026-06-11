@@ -103,7 +103,6 @@ def test_observe_query_fts5(conn: sqlite3.Connection, config: dict) -> None:
     assert result["mode"] == "similarity"
     labels = [s["label"] for s in result["states"]]
     assert "alpha state" in labels
-    # Only verify FTS5 behavior when embedding is unavailable
     if result.get("method") == "fts5":
         assert "beta state" not in labels
 
@@ -137,7 +136,6 @@ def test_observe_empty_project(conn: sqlite3.Connection, config: dict) -> None:
 def test_observe_surfaces_health_issues(conn: sqlite3.Connection, config: dict) -> None:
     """observe includes graph health issues when the project has structural problems."""
     src = _make_node(conn, "health-test", "Root")
-    # Create 3 orphan leaves branching from root
     for i in range(3):
         child = _make_node(conn, "health-test", f"leaf-{i}")
         conn.execute(

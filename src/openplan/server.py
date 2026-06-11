@@ -288,7 +288,6 @@ async def main() -> None:
     init_db(_conn)
     atexit.register(_shutdown)
 
-    # Warm up embedding model synchronously
     try:
         from openplan.core.embedding import warmup_embeddings
         warmup_embeddings()
@@ -307,7 +306,6 @@ async def main() -> None:
         except Exception as e:
             return err("INTERNAL_ERROR", str(e))
 
-    # Track whether project_list was ever called to emit listChanged
     _project_list_cache_version = 0
 
     async with stdio_server() as (read, write):

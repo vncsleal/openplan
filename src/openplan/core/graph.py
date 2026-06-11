@@ -10,19 +10,14 @@ from typing import Any
 
 import numpy as np
 
-from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty, reset_cache as _reset_cache
+from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
 
-_path_length_cache: tuple[float, int] | None = None  # (value, edge_count_at_cache_time)
-
+_path_length_cache: tuple[float, int] | None = None
 
 
 def _invalidate_path_cache() -> None:
     global _path_length_cache
     _path_length_cache = None
-
-
-def _uncertainty_adjusted_recommended(state: dict, conn: sqlite3.Connection) -> float:
-    return state["activation"] * (1.0 - _state_uncertainty(state["id"], conn))
 
 
 def generate_id(project: str, conn: sqlite3.Connection) -> str:
@@ -204,7 +199,6 @@ def act(
         edge = dict(edge)
         target_id = edge["target_id"]
 
-        # Cycle detection
         if _detect_cycle(conn, state_id, target_id, action):
             _safe_rollback(conn, "act_tx", owned)
             return {
@@ -292,7 +286,6 @@ def _observe_search(
     query: str,
     conn: sqlite3.Connection,
 ) -> dict[str, Any]:
-    # Phase 3: try embedding similarity first
     try:
         from openplan.core.embedding import get_cache, get_provider
 
@@ -311,7 +304,6 @@ def _observe_search(
     except Exception:
         pass
 
-    # Phase 1 fallback: FTS5
     try:
         rows = conn.execute(
             "SELECT n.* FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid "
@@ -349,7 +341,6 @@ def observe(
             "SELECT * FROM nodes WHERE project = ? ORDER BY activation DESC",
             (project,),
         ).fetchall()
-        # Cluster by label prefix (first two words) + activation bucket
         def _cluster_key(r: sqlite3.Row) -> str:
             label = r["label"] or r["id"]
             prefix = label.split()[0] if label else r["id"]
@@ -412,7 +403,6 @@ def observe(
         (project,),
     ).fetchone()["cnt"]
     density = (edge_count / (node_count * (node_count - 1))) if node_count > 1 else 0.0
-    # Fetch graph data for path length + entropy
     all_node_rows = conn.execute(
         "SELECT id FROM nodes WHERE project = ?", (project,)
     ).fetchall()
@@ -421,7 +411,6 @@ def observe(
         (project,),
     ).fetchall()
 
-    # Compute avg shortest path length (cached, invalidated on mutation)
     global _path_length_cache
     if _path_length_cache is not None and _path_length_cache[1] == edge_count:
         avg_path_length = _path_length_cache[0]
@@ -449,7 +438,6 @@ def observe(
             avg_path_length = 0.0
         _path_length_cache = (avg_path_length, edge_count)
 
-    # Compute entropy of degree distribution
     if node_count > 0:
         degree_count: dict[str, int] = {r["id"]: 0 for r in all_node_rows}
         for e in edge_rows:
@@ -544,7 +532,6 @@ def _compute_pagerank(
         ).fetchall()
         out_edges[nid] = [(r["target_id"], r["prob"]) for r in rows]
 
-    # Build in-links: for each node, list of (source, prob / total_out_prob)
     in_links: dict[str, list[tuple[str, float]]] = {nid: [] for nid in node_ids}
     for src in node_ids:
         total = sum(p for _, p in out_edges[src])
@@ -574,12 +561,10 @@ def archive_events(
     Moves old events to the events_archive table and returns a summary
     of how many were archived.
     """
-    import time as _time
 
     cutoff = datetime.now(timezone.utc).timestamp() - older_than_days * 86400
     cutoff_str = datetime.fromtimestamp(cutoff, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    # Insert into archive
     conn.execute(
         """INSERT OR IGNORE INTO events_archive
         SELECT * FROM events WHERE created_at < ?""",
@@ -589,7 +574,6 @@ def archive_events(
         "SELECT changes() AS cnt"
     ).fetchone()["cnt"]
 
-    # Delete from main
     conn.execute("DELETE FROM events WHERE created_at < ?", (cutoff_str,))
     deleted = conn.execute("SELECT changes() AS cnt").fetchone()["cnt"]
 
@@ -625,7 +609,6 @@ def export(
             "SELECT e.* FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
             (project,),
         ).fetchall()
-        # Build GraphML XML
         parts: list[str] = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
@@ -673,7 +656,7 @@ def export(
         "events": events,
         "project": project,
         "exported_at": now,
-        "version": "3.0.0",
+        "version": "0.1.0",
     }
 
 
@@ -733,7 +716,6 @@ def branch(
         _safe_rollback(conn, "branch_tx", owned_branch)
         raise
 
-    # Cache invalidation after successful commit
     mark_dirty(state_id, conn)
     _invalidate_path_cache()
     for s in states_created:
@@ -765,14 +747,12 @@ def plan(
     resolved_state: str | None = None
     resolved_info: dict[str, Any] | None = None
 
-    # Phase 3: resolve natural language target if not a state ID
     if re.match(r"^S-\d{6}$", target_id):
         tgt = conn.execute("SELECT * FROM nodes WHERE id = ?", (target_id,)).fetchone()
         if not tgt:
             return {"ok": False, "error": {"code": "INVALID_TARGET", "message": f"Target state {target_id} not found"}}
         resolved_state = target_id
     else:
-        # Natural language target — resolve via embedding similarity
         try:
             from openplan.core.embedding import get_cache, get_provider
 
@@ -815,7 +795,6 @@ def plan(
     expansion_limit = constraints.get("expansion_limit", 500)
     avoid_states = set(constraints.get("avoid_states", []) or [])
 
-    # Pre-compute target embedding for A* bimodal heuristic
     target_emb: np.ndarray | None = None
     avg_edge_cost = config.get("avg_edge_cost", 10000.0)
     embedding_cache = None
@@ -837,17 +816,16 @@ def plan(
     def _heuristic(sid: str) -> float:
         if target_emb is None or embedding_cache is None:
             return 0.0
-        idx = embedding_cache._index.get(sid)  # type: ignore[union-attr]
+        idx = embedding_cache._index.get(sid)
         if idx is None:
             return 0.0
-        state_emb = embedding_cache._matrix[idx]  # type: ignore[union-attr]
+        state_emb = embedding_cache._matrix[idx]
         denom = np.linalg.norm(state_emb) * np.linalg.norm(target_emb)
         if denom == 0:
             return 0.0
         sim = float(np.dot(state_emb, target_emb) / denom)
         return (1.0 - sim) * avg_edge_cost * _HEURISTIC_SCALE
 
-    # A* priority queue: (f, node, path, cum_prob, edge_infos, g)
     f_start = _heuristic(from_id)
     pq: list = [(f_start, from_id, [from_id], 1.0, [], 0.0)]
     visited: dict[str, float] = {}
@@ -906,7 +884,6 @@ def plan(
                 new_f = new_g + _heuristic(neighbor)
                 heapq.heappush(pq, (new_f, neighbor, path + [neighbor], new_prob, new_edge_infos, new_g))
 
-    # Rank candidates by cost, pick top 3 with < 50% edge overlap
     if not candidates:
         if truncated:
             return {"ok": True, "path": None, "truncated": True, "error": "Expansion limit reached, no path found"}
@@ -930,7 +907,6 @@ def plan(
         if not too_similar:
             top_paths.append((g_cost, p_path, p_prob, p_edges))
 
-    # Return the best path
     cost, path, cum_prob, edge_infos = top_paths[0]
     has_low_prob = any(ei["prob"] < 0.5 for ei in edge_infos)
 
@@ -1022,7 +998,6 @@ def learn(
 
     delta_tokens = actual_cost - expected_cost.get("tokens", actual_cost)
 
-    # Get project from source state
     src_node = conn.execute("SELECT project FROM nodes WHERE id = ?", (from_state,)).fetchone()
     project = src_node["project"] if src_node else "unknown"
 
@@ -1047,20 +1022,18 @@ def learn(
     smoothing = learn_cfg.get("smoothing_factor", 0.3)
     min_acts = learn_cfg.get("min_acts_for_calibration", 3)
 
-    # Update cost_tokens with smoothing
     if len(wh) >= min_acts:
         actual_avg = sum(_actual_tokens(w) for w in wh) / len(wh)
         new_cost = smoothing * actual_avg + (1 - smoothing) * edge["cost_tokens"]
     else:
         new_cost = edge["cost_tokens"]
 
-    # Adjust probability based on outcome
     old_prob = edge["prob"]
     if outcome == "success":
         new_prob = min(1.0, old_prob * 1.1 + 0.05)
     elif outcome == "partial":
-        new_prob = old_prob  # no change
-    else:  # failure
+        new_prob = old_prob
+    else:
         new_prob = max(0.01, old_prob * 0.7 - 0.1)
 
     old_activation = conn.execute(
@@ -1094,7 +1067,6 @@ def learn(
         _safe_rollback(conn, "learn_edge_tx", owned_learn)
         raise
 
-    # Compute activation shift after edge update
     try:
         from openplan.core.activation import get_activation
 
@@ -1103,7 +1075,6 @@ def learn(
     except Exception:
         new_activation = old_act_val
 
-    # Compute embedding shift (similarity change between from→to) if embeddings available
     embedding_shift = None
 
     return {
@@ -1338,7 +1309,6 @@ def compress(
 
         merged = 0
         if merge_orphans:
-            # Recompute activations for all project states so fresh states don't have DB-default 0.0
             from openplan.core.activation import get_activation
             all_states = conn.execute(
                 "SELECT id FROM nodes WHERE project = ?", (project,)
@@ -1367,7 +1337,6 @@ def compress(
                     )
                     merged = len(orphan_ids)
 
-        # Use project root node as event target (avoids FK violation)
         event_node = _project_root_node(project, conn)
         if event_node:
             _record_event(conn, event_node, project, "compressed", {

@@ -62,8 +62,6 @@ def config() -> dict[str, Any]:
     }
 
 
-# ── Phase 5: test_observe_rank ──
-
 def test_observe_rank(conn: Any, config: dict[str, Any]) -> None:
     """observe(scope='rank') returns nodes sorted by PageRank score."""
     from openplan.core.graph import observe
@@ -77,12 +75,10 @@ def test_observe_rank(conn: Any, config: dict[str, Any]) -> None:
     assert "pagerank" in result
     assert len(result["pagerank"]) == 20
     assert len(result["states"]) == 20
-    # First state has highest PageRank
     pr_values = list(result["pagerank"].values())
     assert all(pr_values[i] >= pr_values[i + 1] for i in range(len(pr_values) - 1)), (
         "PageRank values not sorted descending"
     )
-    # All scores sum to ~1 (within FP tolerance)
     total = sum(pr_values)
     assert 0.95 < total < 1.05, f"PageRank total {total} not close to 1.0"
 
@@ -95,8 +91,6 @@ def test_observe_rank_empty(conn: Any, config: dict[str, Any]) -> None:
     assert result["mode"] == "rank"
     assert result["count"] == 0
 
-
-# ── Phase 5: test_export_matrix_format ──
 
 def test_export_matrix_format(conn: Any) -> None:
     """export(format='matrix') returns sparse edge list."""
@@ -124,25 +118,20 @@ def test_export_matrix_empty(conn: Any) -> None:
     assert result["sparse"] == []
 
 
-# ── Phase 5: test_archive_events ──
-
 def test_archive_events(conn: Any) -> None:
     """archive_events moves old events to events_archive table."""
     from openplan.core.graph import archive_events
     import json
     from datetime import datetime, timezone
 
-    # Create a state
     conn.execute("INSERT INTO nodes (id, label, project) VALUES ('S-000001', 'test', 'test')")
 
-    # Create an old event (1 year ago)
     old = datetime(2024, 1, 1, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     conn.execute(
         "INSERT INTO events (id, project, node_id, event_type, payload, version, created_at) VALUES (?, 'test', 'S-000001', 'acted', ?, 1, ?)",
         ("E-001", json.dumps({"action": "test"}), old),
     )
 
-    # Create a fresh event (today)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     conn.execute(
         "INSERT INTO events (id, project, node_id, event_type, payload, version, created_at) VALUES (?, 'test', 'S-000001', 'acted', ?, 1, ?)",
@@ -151,20 +140,16 @@ def test_archive_events(conn: Any) -> None:
 
     result = archive_events(conn, older_than_days=30)
 
-    assert result["archived"] >= 1  # old event archived
-    assert result["deleted"] >= 1  # old event deleted
+    assert result["archived"] >= 1
+    assert result["deleted"] >= 1
 
-    # Verify old event is in archive
     archived = conn.execute("SELECT id FROM events_archive").fetchall()
     assert any(r["id"] == "E-001" for r in archived)
 
-    # Verify fresh event still in main events
     remaining = conn.execute("SELECT id FROM events").fetchall()
     assert any(r["id"] == "E-002" for r in remaining)
     assert not any(r["id"] == "E-001" for r in remaining)
 
-
-# ── Performance benchmarks (marked slow) ──
 
 @pytest.mark.slow
 def test_plan_5k_scale(conn: Any) -> None:
@@ -177,10 +162,8 @@ def test_plan_5k_scale(conn: Any) -> None:
     result = plan("S-000001", "S-005000", conn, {})
     elapsed = time.perf_counter() - start
 
-    # We accept up to 5s since in-memory SQLite + Dijkstra on 5k nodes is heavy
     assert elapsed < 5.0, f"plan(5k) took {elapsed:.2f}s"
 
-    # Either found path or correctly reported no path (graph may be disconnected)
     assert result["ok"] is True or "NO_PATH" in result.get("error", {}).get("code", "")
 
 

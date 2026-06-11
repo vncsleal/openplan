@@ -41,7 +41,7 @@ class EmbeddingProvider:
                 model_name=self._model_name,
                 max_length=256,
                 batch_size=self._batch_size,
-                cache_dir=None,  # default HF cache
+                cache_dir=None,
             )
             self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             self._loaded = True
@@ -71,7 +71,7 @@ class EmbeddingProvider:
             return None
 
     def _sync_encode(self, texts: list[str]) -> np.ndarray:
-        results: list[np.ndarray] = list(self._model.embed(texts))  # type: ignore[union-attr]
+        results: list[np.ndarray] = list(self._model.embed(texts))
         return np.array(results, dtype=np.float32)
 
     def similarity(self, text_a: str, text_b: str) -> float:
@@ -97,8 +97,8 @@ class EmbeddingCache:
     def __init__(self, provider: EmbeddingProvider, ann_threshold: int = 1000) -> None:
         self._provider = provider
         self._matrix: np.ndarray | None = None
-        self._index: dict[str, int] = {}  # state_id -> row
-        self._reverse_index: list[str] = []  # row -> state_id (O(1) lookup)
+        self._index: dict[str, int] = {}
+        self._reverse_index: list[str] = []
         self._version: int = 0
         self._ann_threshold = ann_threshold
 
@@ -266,7 +266,6 @@ class EmbeddingCache:
         qv = query_emb[0]
         query_blob = self._vec_to_blob(qv)
 
-        # ANN via vec0 when above threshold
         if (
             self._version >= self._ann_threshold
             and self._vec0_available(conn)
@@ -274,7 +273,6 @@ class EmbeddingCache:
         ):
             return self._query_vec0(query_blob, conn, top_k)
 
-        # Brute-force cosine similarity
         norms = np.linalg.norm(self._matrix, axis=1)
         dot = np.dot(self._matrix, qv)
         denom = norms * np.linalg.norm(qv)
@@ -316,7 +314,6 @@ class EmbeddingCache:
         return results
 
 
-# Module-level singleton (lazy)
 _provider: EmbeddingProvider | None = None
 _cache: EmbeddingCache | None = None
 _embedding_lock = threading.Lock()

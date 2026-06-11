@@ -56,7 +56,6 @@ def test_branch_creates_states(conn: sqlite3.Connection, config: dict) -> None:
     assert result["options"] == 3
     assert len(result["states_created"]) == 3
 
-    # Verify each state exists and has auto-boost
     for sid in result["states_created"]:
         row = conn.execute("SELECT * FROM nodes WHERE id = ?", (sid,)).fetchone()
         assert row is not None
@@ -64,7 +63,6 @@ def test_branch_creates_states(conn: sqlite3.Connection, config: dict) -> None:
         assert props["boost"] is True
         assert "boosted_at" in props
 
-    # Verify branch_id format
     assert result["branch_id"].startswith("B-")
 
 
@@ -82,14 +80,12 @@ def test_branch_links_probabilities(conn: sqlite3.Connection, config: dict) -> N
     ).fetchall()
     assert len(edges) == 2
 
-    # Fast path edge
     assert edges[0]["target_id"] == result["states_created"][0]
     assert edges[0]["action"] == "implement"
     assert edges[0]["prob"] == 0.8
     assert edges[0]["cost_tokens"] == 5000
     assert edges[0]["cost_risk"] == 0.1
 
-    # Safe path edge
     assert edges[1]["target_id"] == result["states_created"][1]
     assert edges[1]["action"] == "review"
     assert edges[1]["prob"] == 0.99

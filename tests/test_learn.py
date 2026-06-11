@@ -82,8 +82,6 @@ def _make_event(
     )
 
 
-# ── Phase 4: test_learn_adjusts_weights ──
-
 def test_learn_adjusts_weights(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
     """learn appends weight_history entry with correct delta."""
     _make_state(conn, "S-000001", "alpha")
@@ -95,10 +93,9 @@ def test_learn_adjusts_weights(conn: sqlite3.Connection, config: dict[str, Any])
 
     assert result["ok"] is True
     assert result["edge"]["action"] == "implement"
-    assert result["calibration"]["delta"] == -2000  # actual < expected
+    assert result["calibration"]["delta"] == -2000
     assert result["calibration"]["history_length"] == 1
 
-    # weight_history persisted
     row = conn.execute(
         "SELECT weight_history FROM edges WHERE source_id = 'S-000001' AND target_id = 'S-000002' AND action = 'implement'"
     ).fetchone()
@@ -107,50 +104,38 @@ def test_learn_adjusts_weights(conn: sqlite3.Connection, config: dict[str, Any])
     assert wh[0]["delta"]["tokens"] == -2000
 
 
-# ── Phase 4: test_learn_calibrates_estimates ──
-
 def test_learn_calibrates_estimates(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
     """After min_acts_for_calibration, cost_tokens is adjusted toward actual average."""
-    config["learning"]["min_acts_for_calibration"] = 2  # lower threshold for test
+    config["learning"]["min_acts_for_calibration"] = 2
 
     _make_state(conn, "S-000001", "alpha")
     _make_state(conn, "S-000002", "beta")
     _make_edge(conn, "S-000001", "S-000002", "implement", cost_tokens=10000)
 
-    # First learn: cost_tokens unchanged (only 1 history entry)
     _make_event(conn, "S-000001", "S-000002", "implement", actual_tokens=5000, expected_tokens=10000)
     result1 = learn("S-000001", "S-000002", "success", 5000, conn, config)
-    assert result1["calibration"]["new_cost"] == 10000  # unchanged
+    assert result1["calibration"]["new_cost"] == 10000
 
-    # Second learn: now has 2 entries >= min_acts=2, should adjust
     _make_event(conn, "S-000001", "S-000002", "implement", actual_tokens=7000, expected_tokens=10000)
     result2 = learn("S-000001", "S-000002", "success", 7000, conn, config)
 
-    # actual average = (5000 + 7000) / 2 = 6000
-    # smoothing = 0.3
-    # new_cost = 0.3 * 6000 + 0.7 * 10000 = 1800 + 7000 = 8800
     assert result2["calibration"]["new_cost"] == 8800.0
-    assert result2["calibration"]["delta"] == -3000  # 7000 - 10000
+    assert result2["calibration"]["delta"] == -3000
 
-    # Verify DB was updated
     row = conn.execute(
         "SELECT cost_tokens FROM edges WHERE source_id = 'S-000001' AND target_id = 'S-000002' AND action = 'implement'"
     ).fetchone()
     assert row["cost_tokens"] == 8800.0
 
 
-# ── Phase 4: test_learn_resolves_edge ──
-
 def test_learn_resolves_edge(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
     """learn resolves the correct edge when multiple actions exist between same states."""
     _make_state(conn, "S-000001", "alpha")
     _make_state(conn, "S-000002", "beta")
 
-    # Two edges: different actions
     _make_edge(conn, "S-000001", "S-000002", "implement", cost_tokens=10000)
     _make_edge(conn, "S-000001", "S-000002", "verify", cost_tokens=5000)
 
-    # Event for "implement"
     _make_event(conn, "S-000001", "S-000002", "implement", actual_tokens=8000)
 
     result = learn("S-000001", "S-000002", "success", 8000, conn, config)
@@ -159,13 +144,11 @@ def test_learn_resolves_edge(conn: sqlite3.Connection, config: dict[str, Any]) -
     assert result["edge"]["action"] == "implement"
     assert result["calibration"]["previous_cost"] == 10000
 
-    # "verify" edge should be untouched
     verify_row = conn.execute(
         "SELECT weight_history FROM edges WHERE source_id = 'S-000001' AND target_id = 'S-000002' AND action = 'verify'"
     ).fetchone()
     assert verify_row["weight_history"] == "[]"
 
-    # "implement" should have 1 entry
     impl_row = conn.execute(
         "SELECT weight_history FROM edges WHERE source_id = 'S-000001' AND target_id = 'S-000002' AND action = 'implement'"
     ).fetchone()

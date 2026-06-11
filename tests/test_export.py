@@ -64,7 +64,7 @@ def test_export_json(conn: sqlite3.Connection, config: dict) -> None:
     data = export("test", conn)
 
     assert data["project"] == "test"
-    assert data["version"] == "3.0.0"
+    assert data["version"] == "0.1.0"
     assert len(data["nodes"]) == 2
     assert len(data["edges"]) == 1
 

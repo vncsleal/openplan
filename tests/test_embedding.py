@@ -69,8 +69,6 @@ def conn() -> sqlite3.Connection:
     return c
 
 
-# ── Phase 3: test_embedding_provider_load ──
-
 def test_embedding_provider_load() -> None:
     """Model loads, warmup succeeds, returns 384-dim vector."""
     p = MockEmbeddingProvider()
@@ -85,8 +83,6 @@ def test_embedding_provider_load() -> None:
     assert encoded.dtype == np.float32
 
 
-# ── Phase 3: test_embedding_provider_thread_pool ──
-
 def test_embedding_provider_thread_pool() -> None:
     """Runs in executor without blocking."""
     p = MockEmbeddingProvider()
@@ -97,8 +93,6 @@ def test_embedding_provider_thread_pool() -> None:
     assert result is not None
     assert result.shape == (1, _DIM)
 
-
-# ── Phase 3: test_embedding_cache_lazy_load ──
 
 def test_embedding_cache_lazy_load(conn: sqlite3.Connection) -> None:
     """Matrix loads on first query, not on construction."""
@@ -125,8 +119,6 @@ def test_embedding_cache_lazy_load(conn: sqlite3.Connection) -> None:
     labels = [r["label"] for r in results]
     assert "alpha" in labels or "beta" in labels
 
-
-# ── Phase 3: test_embedding_cache_incremental_refresh ──
 
 def test_embedding_cache_incremental_refresh(conn: sqlite3.Connection) -> None:
     """New states are queryable without full reload."""
@@ -159,7 +151,6 @@ def test_embedding_cache_vec0_ann(conn: sqlite3.Connection) -> None:
     """cache.query uses ANN via vec0 when above threshold and available."""
     p = MockEmbeddingProvider()
     p.warmup()
-    # Set low threshold to force ANN path
     cache = EmbeddingCache(p, ann_threshold=2)
 
     conn.execute(
@@ -173,8 +164,6 @@ def test_embedding_cache_vec0_ann(conn: sqlite3.Connection) -> None:
     assert len(results) > 0, "ANN query returned no results"
     assert results[0]["similarity"] >= 0, "Similarity should be >= 0"
 
-
-# ── Phase 3: test_observe_query_embedding ──
 
 def test_observe_query_embedding(conn: sqlite3.Connection) -> None:
     """observe(query) uses embedding similarity when provider is available."""
@@ -204,8 +193,6 @@ def test_observe_query_embedding(conn: sqlite3.Connection) -> None:
     assert result["count"] >= 1
     assert "states" in result
 
-
-# ── Phase 3: test_plan_natural_language_target ──
 
 def test_plan_natural_language_target(conn: sqlite3.Connection) -> None:
     """plan resolves non-ID target via embedding similarity."""

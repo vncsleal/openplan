@@ -10,8 +10,8 @@ _activation_cache: dict[str, float] = {}
 _dirty_set: set[str] = set()
 _cache_order: list[str] = []
 _visiting: set[str] = set()
-_max_in_degree: int = 1           # incremental counter (validated periodically)
-_validation_counter: int = 0       # full scan every N mutations
+_max_in_degree: int = 1
+_validation_counter: int = 0
 _VALIDATE_EVERY: int = 100
 _max_in_degree_initialized: bool = False
 _activation_lock = threading.RLock()
@@ -195,8 +195,6 @@ def _precompute_targets(state_id: str, conn: sqlite3.Connection, config: dict[st
         else:
             stack.pop()
             _visiting.discard(sid)
-    # Compute activations sinks-first (reverse order) so predecessors
-    # read stable cached values from their successors
     for sid in reversed(order):
         if sid not in _activation_cache:
             act = _compute_activation(sid, conn, config)

@@ -72,7 +72,7 @@ def test_act_transition(conn: sqlite3.Connection, config: dict) -> None:
     assert result["cursor"] == tgt
     assert result["cost_actual"]["tokens"] == 10000
     assert result["cost_actual"]["risk"] == 0.1
-    assert result["cost_delta"] is None  # no expected_cost provided
+    assert result["cost_delta"] is None
     assert isinstance(result["new_frontier"], list)
 
     events = conn.execute("SELECT * FROM events").fetchall()
@@ -88,12 +88,10 @@ def test_act_cost_delta(conn: sqlite3.Connection, config: dict) -> None:
     tgt = _make_node(conn)
     _edge(conn, src, tgt, "inspect", cost_tokens=8000)
 
-    # with expected_cost: cost_delta shows the difference
     result = act(src, "inspect", conn, config, expected_cost={"tokens": 5000, "risk": 0.05})
     assert result["ok"] is True
     assert result["cost_delta"] == {"tokens": 3000, "risk": 0.05}
 
-    # without expected_cost: cost_delta is None
     result2 = act(src, "inspect", conn, config)
     assert result2["ok"] is True
     assert result2["cost_delta"] is None

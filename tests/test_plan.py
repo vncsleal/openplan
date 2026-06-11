@@ -91,14 +91,12 @@ def test_plan_respects_constraints(conn: sqlite3.Connection, config: dict) -> No
     _edge(conn, start, expensive, "choose", prob=0.9, cost_tokens=100000)
     _edge(conn, expensive, target, "finish", prob=0.95, cost_tokens=50000)
 
-    # Constrain by max_cost — cheap path only (cost = 1500)
     result = plan(start, target, conn, config, constraints={"max_cost": 5000})
 
     assert result["ok"] is True
     assert cheap in result["path"]
     assert expensive not in result["path"]
 
-    # Constrain by min_prob — both paths have high prob, so both work
     result2 = plan(start, target, conn, config, constraints={"min_prob": 0.5})
     assert result2["ok"] is True
 
@@ -108,11 +106,9 @@ def test_plan_expansion_limit(conn: sqlite3.Connection, config: dict) -> None:
     source = nodes[0]
     target = nodes[-1]
 
-    # Create a chain through all nodes so Dijkstra must explore many
     for i in range(len(nodes) - 1):
         _edge(conn, nodes[i], nodes[i + 1], "step", prob=0.9, cost_tokens=1000)
 
-    # With a very small expansion limit, the search should be truncated
     result = plan(source, target, conn, config, constraints={"expansion_limit": 3})
 
     assert result["ok"] is True
@@ -124,7 +120,6 @@ def test_plan_high_uncertainty_flag(conn: sqlite3.Connection, config: dict) -> N
     s2 = _make_node(conn)
     s3 = _make_node(conn)
 
-    # Edge with prob < 0.5 — high uncertainty
     _edge(conn, s1, s2, "risky", prob=0.3, cost_tokens=1000)
     _edge(conn, s2, s3, "finish", prob=0.9, cost_tokens=500)
 
