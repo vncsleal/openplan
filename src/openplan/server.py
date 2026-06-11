@@ -27,6 +27,7 @@ from openplan.core.export import project_list as _project_list
 from openplan.core.graph import diagnostics as _diagnostics
 from openplan.core.graph import observe as _observe
 from openplan.core.graph import _observe_search as _observe_search
+from openplan.core.recommend import recommend as _recommend
 from openplan.core.planner import learn as _learn
 from openplan.core.planner import plan as _plan
 from openplan.db.connection import get_connection
@@ -234,6 +235,19 @@ async def _handle_compress(args: dict) -> CallToolResult:
         _write_lock_release()
 
 
+async def _handle_recommend(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        result = _recommend(
+            args["project"], _get_conn(), _config,
+            goal=args.get("goal"), max_cost=args.get("max_cost"),
+            cursor=args.get("cursor"),
+        )
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
 HANDLERS = {
     "observe": _handle_observe,
     "act": _handle_act,
@@ -245,6 +259,7 @@ HANDLERS = {
     "diagnostics": _handle_diagnostics,
     "project_list": _handle_project_list,
     "compress": _handle_compress,
+    "recommend": _handle_recommend,
 }
 
 
@@ -292,7 +307,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.4",
+                server_version="0.1.5",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )

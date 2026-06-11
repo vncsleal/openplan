@@ -309,6 +309,34 @@ _TOOLS: list[MCPTool] = [
             "required": ["archived_events"],
         },
     ),
+    t(
+        "recommend",
+        "Recommend Best Target",
+        "Analyze the graph to find the highest-value target state and plan an optimal "
+        "A* path to it. Unlike plan, does not require a target — the system proactively "
+        "recommends the best next state to work toward based on activation, visit counts, "
+        "orphan status, and optional goal alignment.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of what to work on"},
+            "max_cost": {"type": "number", "description": "Optional max cost constraint for path planning"},
+            "cursor": {"type": "string", "maxLength": 20, "description": "Optional cursor override (auto-resolved from latest acted event or root if omitted)"},
+        },
+        ["project"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "target_label": {"type": "string"},
+                "reason": {"type": "string"},
+                "explanation": {"type": "string"},
+                "path": {"type": "array", "items": {"type": "object"}},
+                "cost": {"type": "number"},
+                "plan": {"type": "object"},
+                "state_of_project": {"type": "object"},
+            },
+        },
+    ),
 ]
 
 
