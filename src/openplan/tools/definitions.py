@@ -51,11 +51,12 @@ _TOOLS: list[MCPTool] = [
     t(
         "act",
         "Execute Action",
-        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph.",
+        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph. Use parent to create siblings under a specific state.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
             "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.)"},
             "target": {"type": "string", "maxLength": 500, "description": "Target label or state ID. If it doesn't exist, it's created."},
+            "parent": {"type": "string", "maxLength": 20, "description": "Optional parent state ID. Creates the target as a child of this state instead of the cursor. The cursor still moves to the target."},
             "evidence": {"type": "string", "maxLength": 2048, "description": "Optional evidence URL or description"},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
             "expected_cost": {"type": "object", "maxProperties": 10, "description": "Optional expected cost estimate"},
@@ -99,11 +100,10 @@ _TOOLS: list[MCPTool] = [
     t(
         "search",
         "Search Knowledge",
-        "Search across all projects for matching states, projects, and insights. Returns a combined result of projects, states, and stored learnings. Use this to find what you know, what projects exist, and what you've learned.",
+        "Search across all projects for matching states, projects, and insights. Returns a combined result of projects, states, and stored learnings. Use this to find what you know, what projects exist, and what you've learned. When query is omitted, returns a complete project index.",
         {
-            "query": {"type": "string", "maxLength": 500, "description": "Search query"},
+            "query": {"type": "string", "maxLength": 500, "description": "Search query (omit to list all projects)"},
         },
-        ["query"],
         outputSchema={
             "type": "object",
             "properties": {

@@ -118,13 +118,21 @@ async def _handle_act(args: dict) -> CallToolResult:
     try:
         conn = _get_conn()
         project = args["project"]
-        cursor = _get_cursor(project)
-        if not cursor:
+        source = _get_cursor(project)
+        if not source:
             root = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
-            cursor = root["id"] if root else None
-        if not cursor:
+            source = root["id"] if root else None
+        if not source:
             return err("NO_CURSOR", f"No position in {project} — call init first")
-        result = _act(cursor, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
+        parent = args.get("parent")
+        if parent:
+            p_row = conn.execute("SELECT project FROM nodes WHERE id = ?", (parent,)).fetchone()
+            if not p_row:
+                return err("INVALID_PARENT", f"Parent state {parent} not found")
+            if p_row["project"] != project:
+                return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
+            source = parent
+        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
         if result.get("next_state"):
             _set_cursor(project, result["next_state"])
         return ok(result)
@@ -135,12 +143,18 @@ async def _handle_act(args: dict) -> CallToolResult:
 async def _handle_recommend(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
+        conn = _get_conn()
         project = args.get("project")
         if not project or project == "*":
-            results = _recommend_all(_get_conn(), _config, goal=args.get("goal"), max_cost=args.get("max_cost"))
-            return ok({"results": results, "count": len(results)})
+            results = _recommend_all(conn, _config, goal=args.get("goal"), max_cost=args.get("max_cost"))
+            projects = [dict(r) for r in conn.execute(
+                "SELECT n.project, MIN(n.id) AS root_id, COUNT(DISTINCT n2.id) AS state_count "
+                "FROM nodes n LEFT JOIN nodes n2 ON n2.project = n.project "
+                "GROUP BY n.project ORDER BY state_count DESC"
+            ).fetchall()]
+            return ok({"results": results, "count": len(results), "projects": projects})
         cursor = args.get("cursor") or _get_cursor(project)
-        result = _recommend(project, _get_conn(), _config, goal=args.get("goal"), max_cost=args.get("max_cost"), cursor=cursor)
+        result = _recommend(project, conn, _config, goal=args.get("goal"), max_cost=args.get("max_cost"), cursor=cursor)
         return ok(result)
     finally:
         _read_lock_release()
@@ -149,7 +163,17 @@ async def _handle_recommend(args: dict) -> CallToolResult:
 async def _handle_search(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
-        result = _search(args["query"], _get_conn())
+        conn = _get_conn()
+        query = args.get("query")
+        if not query:
+            projects = [dict(r) for r in conn.execute(
+                "SELECT n.project, MIN(n.id) AS root_id, MIN(n.label) AS root_label, "
+                "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
+                "LEFT JOIN nodes n2 ON n2.project = n.project "
+                "GROUP BY n.project ORDER BY state_count DESC"
+            ).fetchall()]
+            return ok({"projects": projects, "count": len(projects)})
+        result = _search(query, conn)
         return ok(result)
     finally:
         _read_lock_release()

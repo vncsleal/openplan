@@ -42,6 +42,12 @@ def recommend(
                 (project,),
             ).fetchone()
             cursor = root["id"] if root else None
+            if cursor:
+                root_has_edges = conn.execute(
+                    "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (cursor,)
+                ).fetchone()
+                if not root_has_edges:
+                    return {"target": None, "reason": "project has one state with no outgoing edges", "suggested_action": {"tool": "act", "action": "implement", "target": cursor}, "state_of_project": {"total_states": 1, "completed": 0, "remaining": 1, "calibration_rate": 0.0}}
 
     if not cursor:
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
@@ -52,7 +58,7 @@ def recommend(
     ).fetchall()
 
     if not node_rows:
-        return {"target": None, "reason": "no other states to recommend", "state_of_project": {"total_states": 1, "completed": 0, "remaining": 1, "calibration_rate": 0.0}}
+        return {"target": None, "reason": "no other states to recommend", "suggested_action": {"tool": "act", "action": "implement", "target": "create first work item"}, "state_of_project": {"total_states": 1, "completed": 0, "remaining": 1, "calibration_rate": 0.0}}
 
     orphan_ids = {r["id"] for r in conn.execute(
         "SELECT id FROM nodes WHERE project = ? AND NOT EXISTS "
@@ -129,6 +135,9 @@ def recommend(
     remaining = health["state_count"] - health["calibration_count"]
     state_of_project = {
         "total_states": health["state_count"],
+        "edge_count": health["edge_count"],
+        "max_depth": health["max_depth"],
+        "orphan_count": health["orphan_count"],
         "completed": health["calibration_count"],
         "remaining": remaining,
         "calibration_rate": round(calibration_rate, 4),
