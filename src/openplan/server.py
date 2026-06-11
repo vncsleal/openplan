@@ -4,7 +4,6 @@ import atexit
 import json
 import logging
 import os
-import sqlite3
 import threading
 from typing import Any
 
@@ -17,33 +16,34 @@ from mcp.types import CallToolResult, ServerCapabilities, TextContent, ToolsCapa
 
 from openplan.config import load_config
 from openplan.core.errors import OpenPlanError
-from openplan.core.telemetry import get_telemetry
-from openplan.core.state import act as _act
-from openplan.core.state import init_project as _init
-from openplan.core.state import branch as _branch
 from openplan.core.export import compress as _compress
-from openplan.core.export import export as _export
-from openplan.core.export import project_list as _project_list
+from openplan.core.graph import search as _search
 from openplan.core.graph import diagnostics as _diagnostics
-from openplan.core.graph import observe as _observe
-from openplan.core.graph import _observe_search as _observe_search
+from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
-from openplan.core.planner import learn as _learn
-from openplan.core.planner import plan as _plan
+from openplan.core.state import act as _act
+from openplan.core.state import init_project as _init
+from openplan.core.telemetry import get_telemetry
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.tools.definitions import get_tools
 
 _config: dict[str, Any] = {}
-_conn: sqlite3.Connection | None = None
+_conn: Any = None
 _write_lock = threading.Lock()
 _read_lock = threading.Lock()
 _read_count = 0
+_notification_queue: list[dict[str, Any]] = []
+_last_cursor: dict[str, str] = {}
+_telemetry = get_telemetry()
+_SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
+if not _SESSION_ID:
+    _log.warning("OPENCODE_SESSION_ID not set — session tracking disabled")
 app = Server("openplan")
 
 
-def _get_conn() -> sqlite3.Connection:
+def _get_conn() -> Any:
     if _conn is None:
         raise RuntimeError("Database not initialized")
     return _conn
@@ -73,28 +73,20 @@ def _write_lock_release() -> None:
     _write_lock.release()
 
 
-_telemetry = get_telemetry()
-_SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
-if not _SESSION_ID:
-    _log.warning("OPENCODE_SESSION_ID not set — session tracking disabled")
-    logging.basicConfig(level=logging.WARNING)
-
-
 def ok(data: dict[str, Any]) -> CallToolResult:
+    result = {"ok": True, "data": data}
+    if _notification_queue:
+        result["_notifications"] = list(_notification_queue)
+        _notification_queue.clear()
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps({"ok": True, "data": data}, default=_j))],
-        structuredContent=data,
+        content=[TextContent(type="text", text=json.dumps(result, default=_j))],
+        structuredContent=result,
     )
 
 
 def err(code: str, msg: str) -> CallToolResult:
     return CallToolResult(
-        content=[
-            TextContent(
-                type="text",
-                text=json.dumps({"ok": False, "error": {"code": code, "message": msg}}),
-            )
-        ],
+        content=[TextContent(type="text", text=json.dumps({"ok": False, "error": {"code": code, "message": msg}}))],
         isError=True,
     )
 
@@ -103,134 +95,49 @@ def _j(o: Any) -> str:
     return o.hex() if isinstance(o, bytes) else str(o)
 
 
-async def _handle_observe(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        project = args.get("project")
-        query = args.get("query")
-        if not project and query:
-            result = _observe_search(None, query, _get_conn())
-            return ok(result)
-        result = _observe(
-            project,
-            query=query,
-            scope=args.get("scope", "frontier"),
-            conn=_get_conn(),
-            config=_config,
-            session_id=_SESSION_ID,
-        )
-        suggestion = result.get("suggested_next_action")
-        if suggestion:
-            _telemetry.record_suggestion(_SESSION_ID, suggestion)
-        conversion = _telemetry.get_suggestion_conversion(_SESSION_ID)
-        if conversion:
-            result["suggestion_conversion"] = conversion
-        return ok(result)
-    finally:
-        _read_lock_release()
+def _get_cursor(project: str) -> str | None:
+    return _last_cursor.get(project)
 
 
-async def _handle_act(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        result = _act(
-            args["state"], args["action"], _get_conn(), _config,
-            target=args.get("target"), evidence=args.get("evidence"),
-            thought=args.get("thought"), expected_cost=args.get("expected_cost"),
-            session_id=_SESSION_ID,
-        )
-        return ok(result)
-    finally:
-        _write_lock_release()
-
-
-async def _handle_export(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        result = _export(args["project"], conn=_get_conn(), fmt=args.get("format", "json"))
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_branch(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        result = _branch(args["state"], args["options"], _get_conn(), _config, session_id=_SESSION_ID)
-        return ok(result)
-    finally:
-        _write_lock_release()
-
-
-async def _handle_plan(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        result = _plan(
-            args["from_id"], args["target_id"], _get_conn(), _config,
-            constraints=args.get("constraints"), session_id=_SESSION_ID,
-        )
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_learn(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        result = _learn(
-            args["from_state"], args["to_state"], args["outcome"],
-            args["actual_cost"], _get_conn(), _config,
-            insight=args.get("insight", ""), session_id=_SESSION_ID,
-        )
-        return ok(result)
-    finally:
-        _write_lock_release()
+def _set_cursor(project: str, state_id: str) -> None:
+    _last_cursor[project] = state_id
 
 
 async def _handle_init(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
-        result = _init(args["project"], args.get("label"), _get_conn(), session_id=_SESSION_ID)
+        project = args["project"]
+        result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
+        if result.get("state_id"):
+            _set_cursor(project, result["state_id"])
         return ok(result)
     finally:
         _write_lock_release()
 
 
-async def _handle_diagnostics(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        result = _diagnostics(
-            args["project"],
-            _get_conn(),
-            config=_config,
-            auto_fix=args.get("auto_fix", False),
-        )
-        usage = _telemetry.get_session_stats(_SESSION_ID)
-        if usage.get("calls", 0) > 0:
-            result["usage"] = usage
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_project_list(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        result = _project_list(_get_conn())
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_compress(args: dict) -> CallToolResult:
+async def _handle_act(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
-        result = _compress(
-            args["project"], _get_conn(), _config,
-            older_than_days=args.get("older_than_days", 30),
-            merge_orphans=args.get("merge_orphans", True),
-            session_id=_SESSION_ID,
-        )
+        conn = _get_conn()
+        project = args["project"]
+        cursor = _get_cursor(project)
+        if not cursor:
+            root = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
+            cursor = root["id"] if root else None
+        if not cursor:
+            return err("NO_CURSOR", f"No position in {project} — call init first")
+        target = args.get("target")
+        target_id = target
+        if target and not conn.execute("SELECT 1 FROM nodes WHERE id = ?", (target,)).fetchone():
+            from openplan.core.state import generate_id
+            target_id = generate_id(project, conn)
+            conn.execute(
+                "INSERT INTO nodes (id, label, project, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (target_id, target, project, "", ""),
+            )
+        result = _act(cursor, args["action"], conn, _config, target=target_id, evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
+        if result.get("next_state"):
+            _set_cursor(project, result["next_state"])
         return ok(result)
     finally:
         _write_lock_release()
@@ -243,28 +150,27 @@ async def _handle_recommend(args: dict) -> CallToolResult:
         if not project or project == "*":
             results = _recommend_all(_get_conn(), _config, goal=args.get("goal"), max_cost=args.get("max_cost"))
             return ok({"results": results, "count": len(results)})
-        result = _recommend(
-            project, _get_conn(), _config,
-            goal=args.get("goal"), max_cost=args.get("max_cost"),
-            cursor=args.get("cursor"),
-        )
+        cursor = args.get("cursor") or _get_cursor(project)
+        result = _recommend(project, _get_conn(), _config, goal=args.get("goal"), max_cost=args.get("max_cost"), cursor=cursor)
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_search(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        result = _search(args["query"], _get_conn())
         return ok(result)
     finally:
         _read_lock_release()
 
 
 HANDLERS = {
-    "observe": _handle_observe,
-    "act": _handle_act,
-    "export": _handle_export,
-    "branch": _handle_branch,
-    "plan": _handle_plan,
-    "learn": _handle_learn,
     "init": _handle_init,
-    "diagnostics": _handle_diagnostics,
-    "project_list": _handle_project_list,
-    "compress": _handle_compress,
+    "act": _handle_act,
     "recommend": _handle_recommend,
+    "search": _handle_search,
 }
 
 
@@ -275,8 +181,6 @@ async def list_tools() -> list:
 
 def _shutdown() -> None:
     global _conn
-    from openplan.core.embedding import shutdown_embeddings
-    shutdown_embeddings()
     _telemetry.flush_to_events()
     if _conn is not None:
         _conn.close()
@@ -291,6 +195,16 @@ async def main() -> None:
     _telemetry.reload_from_events()
     atexit.register(_shutdown)
 
+    notifs = _maintenance_cycle(_conn, _config, _write_lock)
+    _notification_queue.extend(notifs)
+
+    maintenance_thread = threading.Thread(
+        target=_maintenance_loop,
+        args=(_conn, _config, _write_lock, _notification_queue),
+        daemon=True,
+    )
+    maintenance_thread.start()
+
     from openplan.core.embedding import warmup_embeddings
     warmup_embeddings()
 
@@ -299,9 +213,17 @@ async def main() -> None:
         handler = HANDLERS.get(name)
         if not handler:
             return err("UNKNOWN", f"Unknown tool: {name}")
-        _telemetry.record(_SESSION_ID, name, dict((k, arguments[k]) for k in ("project", "state", "action", "scope", "from_id", "target_id") if k in arguments))
         try:
-            return await handler(arguments)
+            result = await handler(arguments)
+            if _notification_queue:
+                if hasattr(result, "content") and result.content:
+                    import copy
+                    txt = result.content[0].text
+                    parsed = json.loads(txt)
+                    parsed.setdefault("_notifications", []).extend(_notification_queue)
+                    _notification_queue.clear()
+                    result.content[0].text = json.dumps(parsed)
+            return result
         except OpenPlanError as e:
             return err(e.code, e.message)
         except (KeyboardInterrupt, SystemExit):
@@ -315,13 +237,21 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.6",
+                server_version="0.1.7",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )
 
 
+def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue: list) -> None:
+    interval = config.get("maintenance_interval_minutes", 5) * 60.0
+    while True:
+        import time
+        time.sleep(interval)
+        notifs = _maintenance_cycle(conn, config, write_lock)
+        queue.extend(notifs)
+
+
 if __name__ == "__main__":
     import anyio
-
     anyio.run(main)

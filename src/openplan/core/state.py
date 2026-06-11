@@ -190,13 +190,26 @@ def act(
         matching = conn.execute(
             "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)
         ).fetchall()
-        if not matching:
+        target_id = target
+        if not matching and target:
+            tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
+            if not tgt:
+                target_id = _ensure_node(src["project"], target, conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
+                (state_id, target_id, action, _now(), _now()),
+            )
+            matching = conn.execute(
+                "SELECT * FROM edges WHERE source_id = ? AND target_id = ? AND action = ?",
+                (state_id, target_id, action),
+            ).fetchall()
+        elif not matching:
             raise InvalidActionError(state_id, action)
-        if len(matching) > 1 and target:
-            matching = [e for e in matching if e["target_id"] == target]
+        if len(matching) > 1 and target_id:
+            matching = [e for e in matching if e["target_id"] == target_id]
             if not matching:
-                raise TargetNotFoundError(state_id, action, target)
-        elif len(matching) > 1 and not target:
+                raise TargetNotFoundError(state_id, action, target_id)
+        elif len(matching) > 1 and not target_id:
             matching = sorted(matching, key=lambda e: (-e["prob"], e["cost_tokens"]))
         edge = dict(matching[0])
         target_id = edge["target_id"]

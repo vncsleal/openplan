@@ -435,3 +435,34 @@ def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] |
     if fixes_applied:
         result["fixes_applied"] = fixes_applied
     return result
+
+
+def search(query: str, conn: sqlite3.Connection) -> dict[str, Any]:
+    projects = [dict(r) for r in conn.execute(
+        "SELECT n.project, n.id AS root_id, n.label, COUNT(e.id) AS events "
+        "FROM nodes n LEFT JOIN events e ON e.project = n.project "
+        "WHERE n.id IN (SELECT MIN(n2.id) FROM nodes n2 GROUP BY n2.project) "
+        "GROUP BY n.project ORDER BY events DESC"
+    ).fetchall()]
+    like_q = f"%{query}%"
+    matched_states = [dict(r) for r in conn.execute(
+        "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
+        (like_q,),
+    ).fetchall()]
+    insights = []
+    for r in conn.execute(
+        "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
+        "JOIN nodes n ON n.id = e.source_id"
+    ).fetchall():
+        try:
+            wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
+            for entry in wh:
+                text = entry.get("insight", "")
+                if query.lower() in text.lower():
+                    insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
+        except (json.JSONDecodeError, TypeError):
+            pass
+    result: dict[str, Any] = {"query": query, "projects": projects, "count": len(projects), "states": matched_states}
+    if insights:
+        result["insights"] = insights
+    return result
