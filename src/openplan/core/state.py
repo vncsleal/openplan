@@ -88,16 +88,11 @@ def _safe_rollback(conn: sqlite3.Connection, name: str, owned: bool) -> None:
 
 
 def _increment_visit(state_id: str, conn: sqlite3.Connection) -> None:
-    row = conn.execute("SELECT props FROM nodes WHERE id = ?", (state_id,)).fetchone()
-    if not row:
-        return
-    try:
-        props = json.loads(row["props"])
-    except (json.JSONDecodeError, TypeError):
-        props = {}
-    count = props.get("visit_count", 0)
-    props["visit_count"] = count + 1
-    conn.execute("UPDATE nodes SET props = ? WHERE id = ?", (json.dumps(props), state_id))
+    conn.execute(
+        "UPDATE nodes SET props = json_set(props, '$.visit_count', "
+        "COALESCE(json_extract(props, '$.visit_count'), 0) + 1) WHERE id = ?",
+        (state_id,),
+    )
 
 
 def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> None:

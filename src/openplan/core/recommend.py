@@ -32,6 +32,17 @@ def recommend(
             ).fetchone()
             cursor = root["id"] if root else None
 
+    if cursor:
+        has_edges = conn.execute(
+            "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (cursor,)
+        ).fetchone()
+        if not has_edges:
+            root = conn.execute(
+                "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+                (project,),
+            ).fetchone()
+            cursor = root["id"] if root else None
+
     if not cursor:
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
 

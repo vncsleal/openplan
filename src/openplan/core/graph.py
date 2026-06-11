@@ -90,7 +90,7 @@ def _observe_search(project: str | None, query: str, conn: sqlite3.Connection) -
     return result
 
 
-def _suggested_next_action(last_event_type: str | None, frontier: list[dict] | None = None, recommended: str | None = None) -> dict:
+def _suggested_next_action(last_event_type: str | None, frontier: list[dict] | None = None, recommended: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
     if last_event_type is None:
         return {"tool": "plan", "reason": "project is empty — start by planning the first goal"}
     hints = {
@@ -103,9 +103,12 @@ def _suggested_next_action(last_event_type: str | None, frontier: list[dict] | N
     result = dict(hints.get(last_event_type, {"tool": "plan", "reason": "assess the current state"}))
     if frontier and recommended:
         result["target"] = recommended
-        action = frontier[0].get("label") if frontier else None
-        if action:
-            result["action"] = action
+        if conn:
+            edge = conn.execute(
+                "SELECT action FROM edges WHERE source_id = ? LIMIT 1", (recommended,)
+            ).fetchone()
+            if edge:
+                result["action"] = edge["action"]
     return result
 
 
@@ -203,7 +206,7 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
         "SELECT event_type FROM events WHERE project = ? ORDER BY created_at DESC LIMIT 1",
         (project,),
     ).fetchone()
-    suggested = _suggested_next_action(last_event["event_type"] if last_event else None, frontier, recommended)
+    suggested = _suggested_next_action(last_event["event_type"] if last_event else None, frontier, recommended, conn)
 
     return {
         "mode": "frontier", "states": [dict(s) for s in frontier],
@@ -369,6 +372,22 @@ def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] |
                         (orphan["id"], orphan["id"], now, now),
                     )
                     fixes_applied += 1
+        if fixes_applied:
+            root_node = conn.execute(
+                "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+                (project,),
+            ).fetchone()
+            if root_node:
+                eid = conn.execute("SELECT COALESCE(MAX(CAST(SUBSTR(id, 3) AS INTEGER)), 0) + 1 FROM events").fetchone()[0]
+                import hashlib
+                ikey = hashlib.sha256(f"{root_node['id']}:auto_fix".encode()).hexdigest()[:32]
+                conn.execute(
+                    "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 1, ?, '', ?)",
+                    (f"E-{eid:06d}", project, root_node["id"], "auto_fix",
+                     json.dumps({"fixes_applied": fixes_applied, "issue_codes": [i["code"] for i in h["issues"]]}),
+                     ikey, now),
+                )
 
     result: dict[str, Any] = {
         "project": project,

@@ -27,6 +27,14 @@ class TelemetryTracker:
         with self._lock:
             self._last_suggestion[sid] = suggestion
 
+    _LOOP_TRANSITIONS: dict[str, set[str]] = {
+        "act": {"learn", "act"},
+        "learn": {"observe", "learn"},
+        "observe": {"branch", "act", "observe"},
+        "branch": {"act", "branch"},
+        "plan": {"branch", "observe", "plan"},
+    }
+
     def _check_suggestion_match(self, sid: str, tool: str) -> None:
         suggestion = self._last_suggestion.get(sid)
         if suggestion:
@@ -35,7 +43,8 @@ class TelemetryTracker:
             suggested_tool = None
         if suggested_tool:
             record = self._suggestion_hits[sid].setdefault(suggested_tool, {"followed": 0, "ignored": 0})
-            if tool == suggested_tool:
+            valid = self._LOOP_TRANSITIONS.get(suggested_tool, {suggested_tool})
+            if tool in valid:
                 record["followed"] += 1
             else:
                 record["ignored"] += 1
