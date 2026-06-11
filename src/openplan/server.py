@@ -35,6 +35,7 @@ _write_lock = threading.Lock()
 _read_lock = threading.Lock()
 _read_count = 0
 _notification_queue: list[dict[str, Any]] = []
+_notification_seen: set[str] = set()
 _last_cursor: dict[str, str] = {}
 _telemetry = get_telemetry()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
@@ -73,12 +74,17 @@ def _write_lock_release() -> None:
     _write_lock.release()
 
 
-def ok(data: dict[str, Any]) -> CallToolResult:
-    result_str = json.dumps({"ok": True, "data": data, **({"_notifications": list(_notification_queue)} if _notification_queue else {})}, default=_j)
-    _notification_queue.clear()
+def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
+    enriched = dict(data)
+    if project:
+        cursor = _get_cursor(project)
+        if cursor:
+            enriched["cursor"] = cursor
+    notifs = _get_fresh_notifications()
+    result_str = json.dumps({"ok": True, "data": enriched, **({"_notifications": notifs} if notifs else {})}, default=_j)
     return CallToolResult(
         content=[TextContent(type="text", text=result_str)],
-        structuredContent=data,
+        structuredContent=enriched,
     )
 
 
@@ -101,6 +107,21 @@ def _set_cursor(project: str, state_id: str) -> None:
     _last_cursor[project] = state_id
 
 
+def _notif_hash(n: dict) -> str:
+    return f"{n.get('code', '')}:{n.get('project', '')}"
+
+
+def _get_fresh_notifications() -> list[dict]:
+    fresh = []
+    for n in list(_notification_queue):
+        h = _notif_hash(n)
+        if h not in _notification_seen:
+            fresh.append(n)
+            _notification_seen.add(h)
+    _notification_queue.clear()
+    return fresh
+
+
 async def _handle_init(args: dict) -> CallToolResult:
     _write_lock_acquire()
     try:
@@ -108,7 +129,7 @@ async def _handle_init(args: dict) -> CallToolResult:
         result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
         if result.get("state_id"):
             _set_cursor(project, result["state_id"])
-        return ok(result)
+        return ok(result, project=project)
     finally:
         _write_lock_release()
 
@@ -135,7 +156,7 @@ async def _handle_act(args: dict) -> CallToolResult:
         result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
         if result.get("next_state"):
             _set_cursor(project, result["next_state"])
-        return ok(result)
+        return ok(result, project=project)
     finally:
         _write_lock_release()
 
@@ -155,7 +176,7 @@ async def _handle_recommend(args: dict) -> CallToolResult:
             return ok({"results": results, "count": len(results), "projects": projects})
         cursor = args.get("cursor") or _get_cursor(project)
         result = _recommend(project, conn, _config, goal=args.get("goal"), max_cost=args.get("max_cost"), cursor=cursor)
-        return ok(result)
+        return ok(result, project=project)
     finally:
         _read_lock_release()
 
@@ -167,7 +188,8 @@ async def _handle_search(args: dict) -> CallToolResult:
         query = args.get("query")
         if not query:
             projects = [dict(r) for r in conn.execute(
-                "SELECT n.project, MIN(n.id) AS root_id, MIN(n.label) AS root_label, "
+                "SELECT n.project, MIN(n.id) AS root_id, "
+                "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
                 "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
                 "LEFT JOIN nodes n2 ON n2.project = n.project "
                 "GROUP BY n.project ORDER BY state_count DESC"
