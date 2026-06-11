@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS events_archive (
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(label, project);
 
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, label, project) VALUES (new.rowid, new.label, new.project);
+    INSERT OR REPLACE INTO nodes_fts(rowid, label, project) VALUES (new.rowid, new.label, new.project);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE OF label ON nodes BEGIN
@@ -79,6 +79,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE events_archive ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    # Recreate FTS triggers with INSERT OR REPLACE (fixes stale rowid on rollback)
+    try:
+        conn.execute("DROP TRIGGER IF EXISTS nodes_ai")
+        conn.execute("DROP TRIGGER IF EXISTS nodes_au")
+        conn.executescript("""
+            CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+                INSERT OR REPLACE INTO nodes_fts(rowid, label, project) VALUES (new.rowid, new.label, new.project);
+            END;
+            CREATE TRIGGER nodes_au AFTER UPDATE OF label ON nodes BEGIN
+                UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
+            END;
+        """)
+        # Clean stale FTS entries (rows in FTS5 with no matching node)
+        conn.execute("DELETE FROM nodes_fts WHERE rowid NOT IN (SELECT rowid FROM nodes)")
+    except Exception:
+        pass
     try_init_vec0(conn)
 
 
