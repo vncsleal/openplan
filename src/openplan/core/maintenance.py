@@ -21,7 +21,7 @@ def _run_cycle(
         return notifications
     try:
         projects = [r["project"] for r in conn.execute(
-            "SELECT DISTINCT project FROM nodes ORDER BY MAX(created_at) DESC LIMIT ?",
+            "SELECT project FROM nodes GROUP BY project ORDER BY MAX(created_at) DESC LIMIT ?",
             (project_limit,),
         ).fetchall()]
         for project in projects:
