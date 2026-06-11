@@ -106,7 +106,7 @@ def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> Non
     )
 
 
-def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 24.0) -> None:
+def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 1.0) -> None:
     cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - stale_hours * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     candidates = conn.execute(
         "SELECT e.target_id FROM edges e "

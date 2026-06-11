@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 from collections import Counter, deque
+from datetime import datetime, timezone
 from typing import Any
 
 from openplan.core.activation import recompute_all_dirty
@@ -35,7 +36,7 @@ def _get_frontier_states(project: str, conn: sqlite3.Connection, config: dict[st
     return [dict(r) for r in rows]
 
 
-def _observe_search(project: str, query: str, conn: sqlite3.Connection) -> dict[str, Any]:
+def _observe_search(project: str | None, query: str, conn: sqlite3.Connection) -> dict[str, Any]:
     try:
         from openplan.core.embedding import get_cache, get_provider
         provider = get_provider()
@@ -46,26 +47,34 @@ def _observe_search(project: str, query: str, conn: sqlite3.Connection) -> dict[
                 return {"mode": "similarity", "method": "embedding", "query": query, "states": emb_results, "count": len(emb_results)}
     except Exception:
         pass
-    try:
-        rows = conn.execute(
-            "SELECT n.* FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid "
-            "WHERE f.project MATCH ? AND nodes_fts MATCH ? ORDER BY rank",
-            (project, query),
-        ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        like = f"%{query}%"
-        rows = conn.execute(
-            "SELECT * FROM nodes WHERE project = ? AND (label LIKE ? OR project LIKE ?)",
-            (project, like, like),
-        ).fetchall()
-
-    states = [dict(r) for r in rows]
+    states: list[dict[str, Any]] = []
+    if project:
+        try:
+            rows = conn.execute(
+                "SELECT n.* FROM nodes_fts f JOIN nodes n ON n.rowid = f.rowid "
+                "WHERE f.project MATCH ? AND nodes_fts MATCH ? ORDER BY rank",
+                (project, query),
+            ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            like = f"%{query}%"
+            rows = conn.execute(
+                "SELECT * FROM nodes WHERE project = ? AND (label LIKE ? OR project LIKE ?)",
+                (project, like, like),
+            ).fetchall()
+        states = [dict(r) for r in rows]
     insights = []
-    for r in conn.execute(
-        "SELECT e.source_id, e.target_id, e.weight_history FROM edges e "
-        "JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
-        (project,),
-    ).fetchall():
+    if project:
+        edge_rows = conn.execute(
+            "SELECT e.source_id, e.target_id, e.weight_history FROM edges e "
+            "JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
+            (project,),
+        ).fetchall()
+    else:
+        edge_rows = conn.execute(
+            "SELECT e.source_id, e.target_id, e.weight_history FROM edges e "
+            "JOIN nodes n ON n.id = e.source_id"
+        ).fetchall()
+    for r in edge_rows:
         try:
             wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
             for entry in wh:
@@ -81,11 +90,23 @@ def _observe_search(project: str, query: str, conn: sqlite3.Connection) -> dict[
     return result
 
 
-def _suggested_next_action(last_event_type: str | None) -> str:
+def _suggested_next_action(last_event_type: str | None, frontier: list[dict] | None = None, recommended: str | None = None) -> dict:
     if last_event_type is None:
-        return "plan"
-    hints = {"acted": "learn", "calibrated": "observe", "branched": "act", "init": "branch", "compressed": "observe"}
-    return hints.get(last_event_type, "plan")
+        return {"tool": "plan", "reason": "project is empty — start by planning the first goal"}
+    hints = {
+        "acted": {"tool": "learn", "reason": "last action was executed, calibrate the edge with actual cost"},
+        "calibrated": {"tool": "observe", "reason": "edge was calibrated, refresh the frontier"},
+        "branched": {"tool": "act", "reason": "new options were created, traverse the frontier"},
+        "init": {"tool": "branch", "reason": "project was created, explore possible approaches"},
+        "compressed": {"tool": "observe", "reason": "events were archived, reassess the graph"},
+    }
+    result = dict(hints.get(last_event_type, {"tool": "plan", "reason": "assess the current state"}))
+    if frontier and recommended:
+        result["target"] = recommended
+        action = frontier[0].get("label") if frontier else None
+        if action:
+            result["action"] = action
+    return result
 
 
 def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connection, config: dict[str, Any], session_id: str = "") -> dict[str, Any]:
@@ -182,7 +203,7 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
         "SELECT event_type FROM events WHERE project = ? ORDER BY created_at DESC LIMIT 1",
         (project,),
     ).fetchone()
-    suggested = _suggested_next_action(last_event["event_type"] if last_event else None)
+    suggested = _suggested_next_action(last_event["event_type"] if last_event else None, frontier, recommended)
 
     return {
         "mode": "frontier", "states": [dict(s) for s in frontier],
@@ -327,7 +348,7 @@ def _graph_health(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def diagnostics(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
+def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] | None = None, auto_fix: bool = False) -> dict[str, Any]:
     h = _graph_health(project, conn)
     event_types = [
         dict(r) for r in conn.execute(
@@ -336,7 +357,20 @@ def diagnostics(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
         ).fetchall()
     ]
     calibration_rate = h["calibration_count"] / h["edge_count"] if h["edge_count"] > 0 else 0.0
-    return {
+    fixes_applied = 0
+
+    if auto_fix:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        for issue in h["issues"]:
+            if issue["code"] == "HIGH_ORPHAN_COUNT" and fixes_applied < 10:
+                for orphan in h["orphans"][:5]:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, 'implement', 0.5, ?, ?)",
+                        (orphan["id"], orphan["id"], now, now),
+                    )
+                    fixes_applied += 1
+
+    result: dict[str, Any] = {
         "project": project,
         "overview": {
             "states": h["state_count"], "edges": h["edge_count"],
@@ -354,3 +388,6 @@ def diagnostics(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
         "orphans": h["orphans"], "orphan_count": h["orphan_count"],
         "issues": h["issues"],
     }
+    if fixes_applied:
+        result["fixes_applied"] = fixes_applied
+    return result

@@ -25,6 +25,7 @@ from openplan.core.export import export as _export
 from openplan.core.export import project_list as _project_list
 from openplan.core.graph import diagnostics as _diagnostics
 from openplan.core.graph import observe as _observe
+from openplan.core.graph import _observe_search as _observe_search
 from openplan.core.planner import learn as _learn
 from openplan.core.planner import plan as _plan
 from openplan.db.connection import get_connection
@@ -101,9 +102,14 @@ def _j(o: Any) -> str:
 async def _handle_observe(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
+        project = args.get("project")
+        query = args.get("query")
+        if not project and query:
+            result = _observe_search(None, query, _get_conn())
+            return ok(result)
         result = _observe(
-            args["project"],
-            query=args.get("query"),
+            project,
+            query=query,
             scope=args.get("scope", "frontier"),
             conn=_get_conn(),
             config=_config,
@@ -186,6 +192,8 @@ async def _handle_diagnostics(args: dict) -> CallToolResult:
         result = _diagnostics(
             args["project"],
             _get_conn(),
+            config=_config,
+            auto_fix=args.get("auto_fix", False),
         )
         return ok(result)
     finally:
@@ -272,7 +280,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.2",
+                server_version="0.1.3",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )

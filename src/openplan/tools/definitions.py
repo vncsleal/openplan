@@ -76,10 +76,11 @@ _TOOLS: list[MCPTool] = [
         "observe",
         "Observe State Space",
         "Observe the current state space. Returns frontier states (activation > threshold "
-        "with outgoing edges), or search results by query.",
+        "with outgoing edges), or search results by query. When query is provided, project "
+        "is optional — omitting it searches insights across all projects.",
         {
-            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
-            "query": {"type": "string", "maxLength": 500, "description": "Search query — uses embedding similarity when available, falls back to FTS5"},
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug (optional with query)"},
+            "query": {"type": "string", "maxLength": 500, "description": "Search query — uses embedding similarity when available, falls back to FTS5 and insight search"},
             "scope": {
                 "type": "string",
                 "enum": ["frontier", "all", "rank", "cluster"],
@@ -87,7 +88,6 @@ _TOOLS: list[MCPTool] = [
                 "description": "Scope of observation",
             },
         },
-        ["project"],
         outputSchema=_OBSERVE_OUTPUT,
     ),
     t(
@@ -249,9 +249,10 @@ _TOOLS: list[MCPTool] = [
         "Graph Health Metrics",
         "Return graph health metrics for a project. Read-only, used by improvement sessions "
         "to assess orphan states, calibration rates, action diversity, and graph depth. "
-        "Never modifies data.",
+        "When auto_fix=True, attempts to auto-resolve the highest-severity issues.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "auto_fix": {"type": "boolean", "default": False, "description": "Auto-resolve fixable issues"},
         },
         ["project"],
         outputSchema={
