@@ -74,13 +74,11 @@ def _write_lock_release() -> None:
 
 
 def ok(data: dict[str, Any]) -> CallToolResult:
-    result = {"ok": True, "data": data}
-    if _notification_queue:
-        result["_notifications"] = list(_notification_queue)
-        _notification_queue.clear()
+    result_str = json.dumps({"ok": True, "data": data, **({"_notifications": list(_notification_queue)} if _notification_queue else {})}, default=_j)
+    _notification_queue.clear()
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(result, default=_j))],
-        structuredContent=result,
+        content=[TextContent(type="text", text=result_str)],
+        structuredContent=data,
     )
 
 
