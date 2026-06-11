@@ -28,6 +28,7 @@ from openplan.core.graph import diagnostics as _diagnostics
 from openplan.core.graph import observe as _observe
 from openplan.core.graph import _observe_search as _observe_search
 from openplan.core.recommend import recommend as _recommend
+from openplan.core.recommend import recommend_all as _recommend_all
 from openplan.core.planner import learn as _learn
 from openplan.core.planner import plan as _plan
 from openplan.db.connection import get_connection
@@ -238,8 +239,12 @@ async def _handle_compress(args: dict) -> CallToolResult:
 async def _handle_recommend(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
+        project = args.get("project")
+        if not project or project == "*":
+            results = _recommend_all(_get_conn(), _config, goal=args.get("goal"), max_cost=args.get("max_cost"))
+            return ok({"results": results, "count": len(results)})
         result = _recommend(
-            args["project"], _get_conn(), _config,
+            project, _get_conn(), _config,
             goal=args.get("goal"), max_cost=args.get("max_cost"),
             cursor=args.get("cursor"),
         )
@@ -272,6 +277,7 @@ def _shutdown() -> None:
     global _conn
     from openplan.core.embedding import shutdown_embeddings
     shutdown_embeddings()
+    _telemetry.flush_to_events()
     if _conn is not None:
         _conn.close()
 
@@ -281,6 +287,8 @@ async def main() -> None:
     _config = load_config()
     _conn = get_connection(_config.get("db_path", "openplan.db"))
     init_db(_conn)
+    _telemetry.set_conn(_conn)
+    _telemetry.reload_from_events()
     atexit.register(_shutdown)
 
     from openplan.core.embedding import warmup_embeddings
@@ -307,7 +315,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.5",
+                server_version="0.1.6",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )

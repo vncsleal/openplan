@@ -18,6 +18,13 @@ def _invalidate_graph_cache() -> None:
     _state_uncertainty_cache = None
 
 
+def _score_state(nid: str, activation: float, props: dict, orphan: bool, max_visits: int, threshold: float, config: dict) -> float:
+    visit_count = props.get("visit_count", 0)
+    visit_ratio = visit_count / max_visits if max_visits > 0 else 0.0
+    rw = config.get("recommend_weights", {"orphan": 0.35, "visit": 0.30, "activation": 0.20, "stale": 0.15})
+    return (rw["orphan"] if orphan else 0.0) + rw["visit"] * (1.0 - visit_ratio) + rw["activation"] * activation + (rw["stale"] if activation < threshold else 0.0)
+
+
 def _state_uncertainty(state_id: str, conn: sqlite3.Connection) -> float:
     rows = conn.execute("SELECT prob FROM edges WHERE source_id = ?", (state_id,)).fetchall()
     if not rows:
@@ -28,7 +35,7 @@ def _state_uncertainty(state_id: str, conn: sqlite3.Connection) -> float:
 def _get_frontier_states(project: str, conn: sqlite3.Connection, config: dict[str, Any]) -> list[dict]:
     threshold = config.get("activation_threshold", 0.5)
     rows = conn.execute(
-        "SELECT DISTINCT n.id, n.label, n.activation FROM nodes n "
+        "SELECT DISTINCT n.id, n.label, n.activation, n.props FROM nodes n "
         "INNER JOIN edges e ON e.source_id = n.id "
         "WHERE n.project = ? AND n.activation > ?",
         (project, threshold),
@@ -199,7 +206,30 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
     else:
         graph_entropy = 0.0
 
-    recommended = max(frontier, key=lambda s: s["activation"] * (1.0 - _state_uncertainty(s["id"], conn)))["id"] if frontier else None
+    recommended = None
+    if frontier:
+        orphan_ids = {r["id"] for r in conn.execute(
+            "SELECT id FROM nodes WHERE project = ? AND NOT EXISTS "
+            "(SELECT 1 FROM edges WHERE source_id = nodes.id) AND id != "
+            "(SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?)",
+            (project, project),
+        ).fetchall()}
+        max_visits = conn.execute(
+            "SELECT MAX(json_extract(props, '$.visit_count')) AS mv FROM nodes WHERE project = ?",
+            (project,),
+        ).fetchone()["mv"] or 0
+        threshold = config.get("activation_threshold", 0.5)
+
+        def _best(r: sqlite3.Row) -> float:
+            try:
+                p = json.loads(r["props"])
+            except (json.JSONDecodeError, TypeError):
+                p = {}
+            return _score_state(r["id"], r["activation"], p, r["id"] in orphan_ids, max_visits, threshold, config)
+
+        best = max(frontier, key=_best) if frontier else None
+        recommended = best["id"] if best else None
+
     health = _graph_health(project, conn) if node_count > 0 else None
 
     last_event = conn.execute(
@@ -213,12 +243,7 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
         "graph": {
             "density": density, "avg_path_length": avg_path_length,
             "node_count": node_count, "edge_count": edge_count, "entropy": graph_entropy,
-            "health": {
-                "issues": health["issues"] if health else [],
-                "orphan_count": health["orphan_count"] if health else 0,
-                "calibration_count": health["calibration_count"] if health else 0,
-                "action_types": len(health["actions_used"]) if health else 0,
-            } if health and health["issues"] else None,
+            "health": health if health else None,
         },
         "recommended": recommended,
         "suggested_next_action": suggested,

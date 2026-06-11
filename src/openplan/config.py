@@ -8,7 +8,7 @@ _CONFIG_SCHEMA_KEYS: set[str] = {
     "db_path", "stale_days", "wip_limit", "activation_threshold",
     "plan_limit", "expansion_limit", "avg_edge_cost", "heuristic_scale",
     "activation_weights", "learning", "embedding", "page_rank",
-    "stale_branch_hours",
+    "stale_branch_hours", "recommend_weights",
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {

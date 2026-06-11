@@ -315,14 +315,14 @@ _TOOLS: list[MCPTool] = [
         "Analyze the graph to find the highest-value target state and plan an optimal "
         "A* path to it. Unlike plan, does not require a target — the system proactively "
         "recommends the best next state to work toward based on activation, visit counts, "
-        "orphan status, and optional goal alignment.",
+        "orphan status, and optional goal alignment. When project is omitted or '*', "
+        "searches across all projects.",
         {
-            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug (optional; omit or use '*' for cross-project)"},
             "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of what to work on"},
             "max_cost": {"type": "number", "description": "Optional max cost constraint for path planning"},
             "cursor": {"type": "string", "maxLength": 20, "description": "Optional cursor override (auto-resolved from latest acted event or root if omitted)"},
         },
-        ["project"],
         outputSchema={
             "type": "object",
             "properties": {

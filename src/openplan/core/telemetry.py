@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import threading
 from collections import Counter, deque
 from typing import Any
@@ -99,6 +101,48 @@ class TelemetryTracker:
             if total_suggestions == 0:
                 return None
             return {"followed": total_followed, "ignored": total_ignored, "rate": round(total_followed / total_suggestions, 2)}
+
+
+    def set_conn(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def flush_to_events(self) -> None:
+        if not hasattr(self, "_conn") or not self._conn:
+            return
+        with self._lock:
+            for sid, hits in self._suggestion_hits.items():
+                total_followed = sum(r["followed"] for r in hits.values())
+                total_ignored = sum(r["ignored"] for r in hits.values())
+                total = total_followed + total_ignored
+                if total == 0:
+                    continue
+                for tool, rec in hits.items():
+                    import hashlib
+                    eid = abs(hash(f"telemetry_{sid}_{tool}")) % 1000000
+                    ikey = hashlib.sha256(f"telemetry:{sid}:{tool}".encode()).hexdigest()[:32]
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
+                        "VALUES (?, '__telemetry__', '__telemetry__', 'telemetry', ?, 1, ?, '', ?)",
+                        (f"E-{eid:06d}", json.dumps({"session": sid, "tool": tool, "followed": rec["followed"], "ignored": rec["ignored"]}), ikey, ""),
+                    )
+            if self._conn:
+                self._conn.commit()
+
+    def reload_from_events(self) -> None:
+        if not hasattr(self, "_conn") or not self._conn:
+            return
+        with self._lock:
+            try:
+                for r in self._conn.execute(
+                    "SELECT payload FROM events WHERE event_type = 'telemetry'"
+                ).fetchall():
+                    payload = json.loads(r["payload"])
+                    sid = payload["session"]
+                    if sid not in self._suggestion_hits:
+                        self._suggestion_hits[sid] = {}
+                    self._suggestion_hits[sid][payload["tool"]] = {"followed": payload["followed"], "ignored": payload["ignored"]}
+            except Exception:
+                pass
 
 
 _telemetry = TelemetryTracker()

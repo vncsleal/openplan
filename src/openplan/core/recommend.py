@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any
 
 from openplan.core.errors import NoPathError
-from openplan.core.graph import _graph_health
+from openplan.core.graph import _graph_health, _score_state
 from openplan.core.planner import plan
 
 
@@ -74,10 +74,8 @@ def recommend(
             props = json.loads(r["props"])
         except (json.JSONDecodeError, TypeError):
             props = {}
-        visit_count = props.get("visit_count", 0)
-        visit_ratio = visit_count / max_visits if max_visits > 0 else 0.0
         orphan = nid in orphan_ids
-        score = (0.35 if orphan else 0.0) + 0.30 * (1.0 - visit_ratio) + 0.20 * activation + (0.15 if activation < threshold else 0.0)
+        score = _score_state(nid, activation, props, orphan, max_visits, threshold, config)
         scored.append((score, nid, label, activation, orphan))
 
     scored.sort(key=lambda x: -x[0])
@@ -166,3 +164,19 @@ def recommend(
         "plan": best_plan,
         "state_of_project": state_of_project,
     }
+
+
+def recommend_all(conn: sqlite3.Connection, config: dict[str, Any], goal: str | None = None, max_cost: float | None = None) -> list[dict[str, Any]]:
+    projects = conn.execute(
+        "SELECT project, MIN(id) AS root_id FROM nodes GROUP BY project ORDER BY MAX(created_at) DESC LIMIT 10"
+    ).fetchall()
+    results = []
+    for p in projects:
+        try:
+            result = recommend(p["project"], conn, config, goal=goal, max_cost=max_cost, cursor=p["root_id"])
+            if result.get("target"):
+                results.append({"project": p["project"], **result})
+        except Exception:
+            continue
+    results.sort(key=lambda r: r.get("cost", 0) if r.get("cost") else float("inf"))
+    return results[:10]
