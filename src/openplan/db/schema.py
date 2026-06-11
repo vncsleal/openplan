@@ -79,7 +79,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE events_archive ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
-    # Recreate FTS triggers with INSERT OR REPLACE (fixes stale rowid on rollback)
     try:
         conn.execute("DROP TRIGGER IF EXISTS nodes_ai")
         conn.execute("DROP TRIGGER IF EXISTS nodes_au")
@@ -91,7 +90,6 @@ def init_db(conn: sqlite3.Connection) -> None:
                 UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
             END;
         """)
-        # Clean stale FTS entries (rows in FTS5 with no matching node)
         conn.execute("DELETE FROM nodes_fts WHERE rowid NOT IN (SELECT rowid FROM nodes)")
     except Exception:
         pass
