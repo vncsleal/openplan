@@ -40,11 +40,12 @@ _TOOLS: list[MCPTool] = [
         outputSchema={
             "type": "object",
             "properties": {
+                "ok": {"type": "boolean"},
                 "state_id": {"type": "string"},
                 "label": {"type": "string"},
                 "created": {"type": "boolean"},
             },
-            "required": ["state_id", "created"],
+            "required": ["ok", "state_id"],
         },
     ),
     t(
@@ -66,7 +67,7 @@ _TOOLS: list[MCPTool] = [
                 "next_state": {"type": "string"},
                 "cursor": {"type": "string"},
                 "cost_actual": {"type": "object"},
-                "cost_delta": {"type": "object"},
+                "cost_delta": {"anyOf": [{"type": "object"}, {"type": "null"}]},
             },
             "required": ["next_state", "cursor"],
         },
@@ -84,13 +85,13 @@ _TOOLS: list[MCPTool] = [
         outputSchema={
             "type": "object",
             "properties": {
-                "target": {"type": "string"},
-                "target_label": {"type": "string"},
-                "reason": {"type": "string"},
-                "explanation": {"type": "string"},
+                "target": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "target_label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "explanation": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "path": {"type": "array"},
-                "cost": {"type": "number"},
-                "plan": {"type": "object"},
+                "cost": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+                "plan": {"anyOf": [{"type": "object"}, {"type": "null"}]},
                 "state_of_project": {"type": "object"},
             },
         },
@@ -110,8 +111,9 @@ _TOOLS: list[MCPTool] = [
                 "projects": {"type": "array"},
                 "states": {"type": "array"},
                 "insights": {"type": "array"},
+                "count": {"type": "integer"},
             },
-            "required": ["query", "projects"],
+            "required": ["query", "projects", "count"],
         },
     ),
 ]
