@@ -13,7 +13,7 @@ _log = logging.getLogger("openplan")
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, Resource, ReadResourceContents, ServerCapabilities, TextContent, ToolsCapability, ResourcesCapability
+from mcp.types import CallToolResult, ReadResourceResult, Resource, ServerCapabilities, TextContent, TextResourceContents, ToolsCapability, ResourcesCapability
 
 from openplan.config import load_config
 from openplan.core.analytics import compute_analytics
@@ -252,19 +252,19 @@ async def list_resources() -> list[Resource]:
 
 
 @app.read_resource()
-async def read_resource(uri: str) -> list[ReadResourceContents]:
+async def read_resource(uri: str) -> ReadResourceResult:
     conn = _get_conn()
     if uri == "openplan://projects":
         projects = [dict(r) for r in conn.execute("SELECT DISTINCT project, COUNT(*) AS state_count FROM nodes GROUP BY project").fetchall()]
-        return [ReadResourceContents(content=json.dumps(projects), mimeType="application/json")]
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(projects), mimeType="application/json")])
     if uri == "openplan://analytics":
-        return [ReadResourceContents(content=json.dumps(compute_analytics(conn)), mimeType="application/json")]
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(compute_analytics(conn)), mimeType="application/json")])
     m = re.match(r"openplan://(.+?)/graph", uri)
     if m:
         project = m.group(1)
         health = _graph_health(project, conn)
-        return [ReadResourceContents(content=json.dumps(health), mimeType="application/json")]
-    return [ReadResourceContents(content=json.dumps({"error": "not found"}), mimeType="application/json")]
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(health), mimeType="application/json")])
+    return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps({"error": "not found"}), mimeType="application/json")])
 
 
 def _shutdown() -> None:
