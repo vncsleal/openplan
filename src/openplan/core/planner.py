@@ -31,7 +31,7 @@ def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any]) -> float:
 
     learn_cfg = config.get("learning", {})
     smoothing = learn_cfg.get("smoothing_factor", 0.3)
-    min_acts = learn_cfg.get("min_acts_for_calibration", 3)
+    min_acts = learn_cfg.get("min_acts_for_calibration", 1)
 
     if len(weight_history) >= min_acts:
         actual_costs = [_actual_tokens(wh) for wh in weight_history]
@@ -252,7 +252,7 @@ def learn(
 
     learn_cfg = config.get("learning", {})
     smoothing = learn_cfg.get("smoothing_factor", 0.3)
-    min_acts = learn_cfg.get("min_acts_for_calibration", 3)
+    min_acts = learn_cfg.get("min_acts_for_calibration", 1)
     new_cost = edge["cost_tokens"]
     if len(wh) >= min_acts:
         actual_avg = sum(_actual_tokens(w) for w in wh) / len(wh)

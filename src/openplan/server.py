@@ -272,7 +272,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.1.0",
+                server_version="0.1.2",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True)),
             ),
         )

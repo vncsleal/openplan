@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections import Counter, deque
@@ -57,7 +58,33 @@ def _observe_search(project: str, query: str, conn: sqlite3.Connection) -> dict[
             "SELECT * FROM nodes WHERE project = ? AND (label LIKE ? OR project LIKE ?)",
             (project, like, like),
         ).fetchall()
-    return {"mode": "similarity", "method": "fts5", "query": query, "states": [dict(r) for r in rows], "count": len(rows)}
+
+    states = [dict(r) for r in rows]
+    insights = []
+    like_q = f"%{query}%"
+    for r in conn.execute(
+        "SELECT payload FROM events WHERE project = ? AND event_type = 'calibrated'",
+        (project,),
+    ).fetchall():
+        try:
+            payload = json.loads(r["payload"])
+            if like_q[1:-1].lower() in payload.get("insight", "").lower():
+                insights.append({"source": "insight", "text": payload.get("insight", ""), "from_state": payload.get("from"), "to_state": payload.get("to")})
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    result: dict[str, Any] = {"mode": "similarity", "query": query, "states": states, "count": len(states)}
+    if insights:
+        result["mode"] = "search"
+        result["insights"] = insights
+    return result
+
+
+def _suggested_next_action(last_event_type: str | None) -> str:
+    if last_event_type is None:
+        return "plan"
+    hints = {"acted": "learn", "calibrated": "observe", "branched": "act", "init": "branch", "compressed": "observe"}
+    return hints.get(last_event_type, "plan")
 
 
 def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connection, config: dict[str, Any], session_id: str = "") -> dict[str, Any]:
@@ -150,6 +177,12 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
     recommended = max(frontier, key=lambda s: s["activation"] * (1.0 - _state_uncertainty(s["id"], conn)))["id"] if frontier else None
     health = _graph_health(project, conn) if node_count > 0 else None
 
+    last_event = conn.execute(
+        "SELECT event_type FROM events WHERE project = ? ORDER BY created_at DESC LIMIT 1",
+        (project,),
+    ).fetchone()
+    suggested = _suggested_next_action(last_event["event_type"] if last_event else None)
+
     return {
         "mode": "frontier", "states": [dict(s) for s in frontier],
         "graph": {
@@ -163,6 +196,7 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
             } if health and health["issues"] else None,
         },
         "recommended": recommended,
+        "suggested_next_action": suggested,
     }
 
 

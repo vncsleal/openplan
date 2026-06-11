@@ -87,6 +87,43 @@ def _safe_rollback(conn: sqlite3.Connection, name: str, owned: bool) -> None:
             pass
 
 
+def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> None:
+    wh_raw = edge.get("weight_history") or "[]"
+    try:
+        wh = json.loads(wh_raw) if isinstance(wh_raw, str) else (wh_raw or [])
+    except (json.JSONDecodeError, TypeError):
+        wh = []
+    now = _now()
+    wh.append({
+        "actual_cost": {"tokens": edge.get("cost_tokens", 10000)},
+        "expected_cost": {"tokens": edge.get("cost_tokens", 10000)},
+        "learned_at": now,
+        "auto": True,
+    })
+    conn.execute(
+        "UPDATE edges SET weight_history = ?, updated_at = ? WHERE source_id = ? AND target_id = ? AND action = ?",
+        (json.dumps(wh), now, edge["source_id"], target_id, edge["action"]),
+    )
+
+
+def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 24.0) -> None:
+    cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - stale_hours * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    candidates = conn.execute(
+        "SELECT e.target_id FROM edges e "
+        "JOIN nodes n ON n.id = e.target_id "
+        "WHERE e.source_id = ? AND n.created_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM events ev WHERE ev.node_id = n.id AND ev.event_type IN ('acted', 'branched')) "
+        "AND NOT EXISTS (SELECT 1 FROM edges e2 WHERE e2.source_id = n.id) "
+        "LIMIT ?",
+        (source_id, cutoff, rate_limit),
+    ).fetchall()
+    for row in candidates:
+        tid = row["target_id"]
+        conn.execute("DELETE FROM edges WHERE source_id = ? AND target_id = ?", (source_id, tid))
+        conn.execute("DELETE FROM edges WHERE source_id = ?", (tid,))
+        conn.execute("DELETE FROM nodes WHERE id = ?", (tid,))
+
+
 def _detect_cycle(conn: sqlite3.Connection, source_id: str, target_id: str, action: str) -> bool:
     row = conn.execute(
         """WITH RECURSIVE r(id) AS (
@@ -165,6 +202,8 @@ def act(
             "cost_actual": {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)},
         }
         _record_event(conn, state_id, src["project"], "acted", payload, session_id)
+        _auto_calibrate(conn, edge, target_id)
+        _prune_stale_branches(state_id, conn, session_id)
         mark_dirty(state_id, conn)
         mark_dirty(target_id, conn)
         _invalidate_graph_cache()

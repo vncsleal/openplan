@@ -94,8 +94,9 @@ _TOOLS: list[MCPTool] = [
         "act",
         "Execute State Transition",
         "Execute a transition between states. Validates the edge exists, detects cycles, "
-        "records the action, and returns the next cursor. When multiple edges match the same "
-        "action, provide 'target' to disambiguate, or the highest-probability edge is selected.",
+        "records the action, auto-calibrates the edge's weight history, and returns the next cursor. "
+        "When multiple edges match the same action, provide 'target' to disambiguate, or the "
+        "highest-probability edge is selected.",
         {
             "state": {"type": "string", "maxLength": 20, "description": "Source state ID (S-XXXXXX format)"},
             "action": {"type": "string", "maxLength": 200, "description": "Action to execute"},
