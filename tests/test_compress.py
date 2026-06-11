@@ -8,7 +8,6 @@ import pytest
 from openplan.core.activation import reset_cache
 from openplan.core.state import act, branch, generate_id
 from openplan.core.export import compress, project_list
-from openplan.core.planner import plan
 from openplan.db.schema import init_db
 
 

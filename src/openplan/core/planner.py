@@ -4,7 +4,6 @@ import heapq
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -156,7 +155,7 @@ def plan(
 
     if not candidates:
         if truncated:
-            return {"ok": True, "path": None, "truncated": True, "error": "Expansion limit reached, no path found"}
+            return {"ok": True, "path": None, "truncated": True}
         return {"ok": False, "error": {"code": "NO_PATH", "message": "No path found from source to target"}}
 
     candidates.sort(key=lambda x: x[0])

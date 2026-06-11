@@ -7,13 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
-
-_path_length_cache: tuple[float, int] | None = None
-
-
-def _invalidate_path_cache() -> None:
-    global _path_length_cache
-    _path_length_cache = None
+from openplan.core.graph import _get_frontier_states, _invalidate_graph_cache
 
 
 def generate_id(project: str, conn: sqlite3.Connection) -> str:
@@ -120,9 +114,12 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
         _record_event(conn, sid, project, "init", {"label": label or project}, session_id)
         _safe_release(conn, "init_tx", owned_init)
         return {"ok": True, "state_id": sid, "label": label or project, "created": True}
-    except Exception:
+    except sqlite3.IntegrityError as e:
         _safe_rollback(conn, "init_tx", owned_init)
-        raise
+        return {"ok": False, "error": {"code": "DUPLICATE", "message": f"Project already exists: {e}"}}
+    except Exception as e:
+        _safe_rollback(conn, "init_tx", owned_init)
+        return {"ok": False, "error": {"code": "INIT_FAILED", "message": str(e)}}
 
 
 def act(
@@ -170,7 +167,7 @@ def act(
         _record_event(conn, state_id, src["project"], "acted", payload, session_id)
         mark_dirty(state_id, conn)
         mark_dirty(target_id, conn)
-        _invalidate_path_cache()
+        _invalidate_graph_cache()
         get_activation(state_id, conn, config)
         get_activation(target_id, conn, config)
 
@@ -181,8 +178,6 @@ def act(
                 "tokens": cost_actual["tokens"] - expected_cost.get("tokens", 0),
                 "risk": cost_actual["risk"] - expected_cost.get("risk", 0.0),
             }
-
-        from openplan.core.graph import _get_frontier_states
 
         frontier = _get_frontier_states(src["project"], conn, config)
         _safe_release(conn, "act_tx", owned)
@@ -234,6 +229,10 @@ def branch(
             )
             states_created.append(sid)
 
+        for s in states_created:
+            increment_max_in_degree(s, conn)
+            mark_dirty(s, conn)
+
         _record_event(conn, state_id, project, "branched", {
             "action": "branched", "source": state_id, "branch_id": branch_id,
             "options": len(options), "states_created": states_created,
@@ -244,8 +243,6 @@ def branch(
         raise
 
     mark_dirty(state_id, conn)
-    _invalidate_path_cache()
-    for s in states_created:
-        increment_max_in_degree(s, conn)
+    _invalidate_graph_cache()
 
     return {"ok": True, "branch_id": branch_id, "options": len(options), "states_created": states_created}

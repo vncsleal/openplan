@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from openplan.core.activation import get_activation
+from openplan.core.activation import get_activation, recompute_all_dirty
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
@@ -103,9 +103,7 @@ def compress(
 
         merged = 0
         if merge_orphans:
-            all_states = conn.execute("SELECT id FROM nodes WHERE project = ?", (project,)).fetchall()
-            for s in all_states:
-                get_activation(s["id"], conn, config)
+            recompute_all_dirty(conn, config)
             orphans = conn.execute(
                 "SELECT n.id, n.label FROM nodes n "
                 "WHERE n.project = ? AND n.activation < 0.3 "

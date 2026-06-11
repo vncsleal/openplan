@@ -11,7 +11,7 @@ from openplan.core.activation import recompute_all_dirty
 _state_uncertainty_cache: tuple[float, int] | None = None
 
 
-def _invalidate_path_cache() -> None:
+def _invalidate_graph_cache() -> None:
     global _state_uncertainty_cache
     _state_uncertainty_cache = None
 
