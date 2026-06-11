@@ -127,6 +127,7 @@ def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: 
     ).fetchall()
     for row in candidates:
         tid = row["target_id"]
+        conn.execute("DELETE FROM events WHERE node_id = ?", (tid,))
         conn.execute("DELETE FROM edges WHERE source_id = ? AND target_id = ?", (source_id, tid))
         conn.execute("DELETE FROM edges WHERE source_id = ?", (tid,))
         conn.execute("DELETE FROM nodes WHERE id = ?", (tid,))
