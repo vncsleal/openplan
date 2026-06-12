@@ -120,6 +120,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM nodes_fts WHERE rowid NOT IN (SELECT rowid FROM nodes)")
     except Exception:
         pass
+    for col in ("status TEXT NOT NULL DEFAULT 'pending'",):
+        try:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     try_init_vec0(conn)
 
 

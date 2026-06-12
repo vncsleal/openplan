@@ -29,6 +29,10 @@ from openplan.core.errors import OpenPlanError
 from openplan.core.graph import _graph_health, search as _search
 from openplan.core.insight_propagation import propagate as _propagate
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
+from openplan.core.read import read_state as _read_state
+from openplan.core.read import reconstruct as _reconstruct
+from openplan.core.read import update_state as _update_state
+from openplan.core.reasoning import STATUS_VALUES, ReasoningPayload
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
 from openplan.core.state import act as _act
@@ -281,11 +285,50 @@ async def _handle_search(args: dict) -> CallToolResult:
         _read_lock_release()
 
 
+async def _handle_read_state(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        result = _read_state(args["state_id"], _get_conn())
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_update_state(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    try:
+        result = _update_state(
+            args["state_id"], _get_conn(),
+            status=args.get("status"),
+            props_patch=args.get("props_patch"),
+            session_id=_SESSION_ID,
+        )
+        return ok(result)
+    finally:
+        _write_lock_release()
+    if result.get("state_id"):
+        state_row = _conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
+        if state_row:
+            await _push_resource_notification(state_row["project"])
+
+
+async def _handle_reconstruct(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        result = _reconstruct(args["project"], _get_conn())
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
 HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
     "recommend": _handle_recommend,
     "search": _handle_search,
+    "read_state": _handle_read_state,
+    "update_state": _handle_update_state,
+    "reconstruct": _handle_reconstruct,
 }
 
 
@@ -431,7 +474,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.2.1",
+                server_version="0.2.3",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )

@@ -486,12 +486,12 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None, lim
 
     if project:
         all_nodes = [dict(r) for r in conn.execute(
-            "SELECT id, label, project, activation FROM nodes WHERE project = ?",
+            "SELECT id, label, project, activation, status FROM nodes WHERE project = ?",
             (project,),
         ).fetchall()]
     else:
         all_nodes = [dict(r) for r in conn.execute(
-            "SELECT id, label, project, activation FROM nodes"
+            "SELECT id, label, project, activation, status FROM nodes"
         ).fetchall()]
 
     scored = []
@@ -505,7 +505,7 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None, lim
     scored.sort(key=lambda x: (-x[0], -x[1]))
     matched_states = []
     for score, activation, node, matched in scored[:limit]:
-        entry = {"id": node["id"], "label": node["label"], "project": node["project"], "activation": activation}
+        entry = {"id": node["id"], "label": node["label"], "project": node["project"], "activation": activation, "status": node.get("status", "pending")}
         if matched:
             entry["matched_tokens"] = matched
         matched_states.append(entry)
@@ -514,12 +514,12 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None, lim
         like_q = f"%{query}%"
         if project:
             rows = conn.execute(
-                "SELECT id, label, project, activation FROM nodes WHERE project = ? AND label LIKE ? ORDER BY activation DESC LIMIT ?",
+                "SELECT id, label, project, activation, status FROM nodes WHERE project = ? AND label LIKE ? ORDER BY activation DESC LIMIT ?",
                 (project, like_q, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT ?",
+                "SELECT id, label, project, activation, status FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT ?",
                 (like_q, limit),
             ).fetchall()
         matched_states = [dict(r) for r in rows]

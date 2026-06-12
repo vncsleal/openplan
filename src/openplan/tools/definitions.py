@@ -52,7 +52,7 @@ _TOOLS: list[MCPTool] = [
     t(
         "act",
         "Execute Action",
-        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph. Use parent to create siblings under a specific state.",
+        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph. Use parent to create siblings under a specific state. Automatically marks the source state as 'done' and the target as 'in_progress'.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
             "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.)"},
@@ -118,6 +118,66 @@ _TOOLS: list[MCPTool] = [
                 "count": {"type": "integer"},
             },
             "required": ["projects", "count"],
+        },
+    ),
+    t(
+        "read_state",
+        "Read State",
+        "Returns full state including parsed reasoning payload, edges, events, and metadata. Use this to deeply understand a single state's context.",
+        {
+            "state_id": {"type": "string", "maxLength": 20, "description": "State ID to read"},
+        },
+        ["state_id"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "state": {"type": "object"},
+                "edges_out": {"type": "array"},
+                "edges_in": {"type": "array"},
+                "events": {"type": "array"},
+            },
+            "required": ["ok", "state"],
+        },
+    ),
+    t(
+        "update_state",
+        "Update State",
+        "Update reasoning, status, or arbitrary props on an existing state. This is the AI's mechanism for self-correction — updating a state when new information arrives. Reasoning fields merge into the existing props, preserving non-reasoning data (like visit_count).",
+        {
+            "state_id": {"type": "string", "maxLength": 20, "description": "State ID to update"},
+            "status": {"type": "string", "enum": sorted(["pending", "in_progress", "done", "blocked", "superseded"]), "description": "New status (optional)"},
+            "props_patch": {"type": "object", "maxProperties": 20, "description": "Partial reasoning payload or arbitrary props to merge"},
+        },
+        ["state_id"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "state_id": {"type": "string"},
+                "updated_fields": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["ok", "state_id"],
+        },
+    ),
+    t(
+        "reconstruct",
+        "Reconstruct State Tree",
+        "Returns the full state tree (all states + edges) with reasoning payloads for a project. Use this to rebuild the entire mental model from scratch when context is lost or after a session handoff.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+        },
+        ["project"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "project": {"type": "string"},
+                "states": {"type": "array"},
+                "edges": {"type": "array"},
+                "statistics": {"type": "object"},
+            },
+            "required": ["ok", "project", "states"],
         },
     ),
 ]

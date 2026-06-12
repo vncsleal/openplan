@@ -66,3 +66,8 @@ class TargetResolutionError(OpenPlanError):
 class NoOptionsError(OpenPlanError):
     def __init__(self) -> None:
         super().__init__("NO_OPTIONS", "At least one option required")
+
+
+class InvalidStatusError(OpenPlanError):
+    def __init__(self, status: str) -> None:
+        super().__init__("INVALID_STATUS", f"Invalid status value: '{status}'. Must be one of: pending, in_progress, done, blocked, superseded")

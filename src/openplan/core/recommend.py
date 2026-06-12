@@ -57,7 +57,7 @@ def recommend(
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
 
     node_rows = conn.execute(
-        "SELECT id, label, activation, props FROM nodes WHERE project = ? AND id != ?",
+        "SELECT id, label, activation, props FROM nodes WHERE project = ? AND id != ? AND status NOT IN ('done', 'superseded')",
         (project, cursor),
     ).fetchall()
 
@@ -160,13 +160,17 @@ def recommend(
 
     health = _graph_health(project, conn)
     calibration_rate = health["calibration_count"] / health["edge_count"] if health["edge_count"] > 0 else 0.0
-    remaining = health["state_count"] - health["calibration_count"]
+    done_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'",
+        (project,),
+    ).fetchone()["cnt"]
+    remaining = health["state_count"] - done_count
     state_of_project = {
         "total_states": health["state_count"],
         "edge_count": health["edge_count"],
         "max_depth": health["max_depth"],
         "orphan_count": health["orphan_count"],
-        "completed": health["calibration_count"],
+        "completed": done_count,
         "remaining": remaining,
         "calibration_rate": round(calibration_rate, 4),
     }

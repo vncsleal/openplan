@@ -16,6 +16,7 @@ from openplan.core.errors import (
     NoOptionsError, OpenPlanError,
 )
 from openplan.core.graph import _get_frontier_states, _invalidate_graph_cache
+from openplan.core.reasoning import ReasoningPayload
 
 
 def generate_id(project: str, conn: sqlite3.Connection) -> str:
@@ -191,6 +192,7 @@ def act(
     thought: str | None = None,
     expected_cost: dict | None = None,
     session_id: str = "",
+    reasoning: dict | None = None,
 ) -> dict[str, Any]:
     owned = _safe_savepoint(conn, "act_tx")
     try:
@@ -202,6 +204,13 @@ def act(
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
             if not tgt:
                 target_id = _ensure_node(src["project"], target, conn)
+                if reasoning:
+                    reasoning_payload = ReasoningPayload.from_props(reasoning)
+                    reasoning_payload.validate()
+                    current_props = {}
+                    merged = reasoning_payload.merge_into_props(current_props)
+                    conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
+                                 (json.dumps(merged), _now(), target_id))
             conn.execute(
                 "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
                 (state_id, target_id, action, _now(), _now()),
@@ -236,6 +245,8 @@ def act(
         _increment_visit(target_id, conn)
         _auto_calibrate(conn, edge, target_id)
         _prune_stale_branches(state_id, conn, session_id)
+        conn.execute("UPDATE nodes SET status = 'done', updated_at = ? WHERE id = ? AND status NOT IN ('blocked', 'superseded')", (_now(), state_id))
+        conn.execute("UPDATE nodes SET status = 'in_progress', updated_at = ? WHERE id = ? AND status NOT IN ('done', 'blocked', 'superseded')", (_now(), target_id))
         mark_dirty(state_id, conn)
         mark_dirty(target_id, conn)
         _invalidate_graph_cache()
