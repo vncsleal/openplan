@@ -185,6 +185,95 @@ _TOOLS: list[MCPTool] = [
             "required": ["ok", "project", "cursor", "project_health"],
         },
     ),
+    t(
+        "plan",
+        "Plan Path",
+        "Find the optimal path from your current position to a target state. Target can be a state ID (S-000042) or a natural language description resolved via embeddings. Returns path, expected cost, and traversal steps.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "target": {"type": "string", "maxLength": 500, "description": "Target state ID or natural language description"},
+            "constraints": {
+                "type": "object",
+                "maxProperties": 10,
+                "description": "Optional constraints: max_cost, min_prob, expansion_limit, avoid_states",
+                "properties": {
+                    "max_cost": {"type": "number"},
+                    "min_prob": {"type": "number"},
+                    "expansion_limit": {"type": "integer"},
+                    "avoid_states": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        ["project", "target"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "path": {"anyOf": [{"type": "array"}, {"type": "null"}]},
+                "expected_cost": {"type": "object"},
+                "traversal": {"type": "array"},
+                "truncated": {"type": "boolean"},
+                "high_uncertainty": {"type": "boolean"},
+            },
+            "required": ["ok", "path"],
+        },
+    ),
+    t(
+        "compare_paths",
+        "Compare Paths",
+        "Compare cost, risk, and steps across multiple target states from your current position. Results sorted cheapest first. Use this to decide between alternative approaches.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "targets": {"type": "array", "items": {"type": "string", "maxLength": 500}, "minItems": 1, "maxItems": 10, "description": "State IDs or natural language targets to compare"},
+        },
+        ["project", "targets"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "results": {"type": "array"},
+                "count": {"type": "integer"},
+                "from": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            },
+            "required": ["ok", "results"],
+        },
+    ),
+    t(
+        "optimize",
+        "Optimize Project Order",
+        "Find the optimal traversal order for all remaining (non-done, non-blocked) states that minimizes total cost. Uses greedy nearest-neighbor heuristic. Returns ordered list with cumulative cost.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+        },
+        ["project"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "optimal_order": {"type": "array"},
+                "total_cost": {"type": "number"},
+                "count": {"type": "integer"},
+                "remaining_unreachable": {"type": "integer"},
+                "from": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            },
+            "required": ["ok", "optimal_order"],
+        },
+    ),
+    t(
+        "tune",
+        "Tune System Parameters",
+        "Analyze all edge calibration data and compute per-action statistics (avg cost, avg risk, success rate). Updates tunings in the meta table for the recommendation engine. Call periodically or after completing significant work.",
+        {},
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "actions_tuned": {"type": "integer"},
+                "recommendations": {"type": "object"},
+            },
+            "required": ["ok", "actions_tuned"],
+        },
+    ),
 ]
 
 

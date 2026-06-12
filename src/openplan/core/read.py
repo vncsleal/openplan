@@ -6,8 +6,9 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from openplan.core.errors import InvalidStateError, InvalidStatusError
+from openplan.core.errors import InvalidStateError, InvalidStatusError, NoPathError
 from openplan.core.graph import _get_frontier_states, _graph_health
+from openplan.core.planner import plan as _plan
 from openplan.core.reasoning import REASONING_FIELDS, STATUS_VALUES, ReasoningPayload
 from openplan.core.state import _now, _record_event
 
@@ -268,4 +269,114 @@ def reconstruct(
                 calibration_count / edge_count, 4
             ) if edge_count > 0 else 0.0,
         },
+    }
+
+
+def compare_paths(
+    project: str,
+    conn: sqlite3.Connection,
+    targets: list[str],
+    config: dict[str, Any] | None = None,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    config = config or {}
+    if not cursor:
+        root = conn.execute(
+            "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+            (project,),
+        ).fetchone()
+        cursor = root["id"] if root else None
+    if not cursor:
+        return {"ok": True, "results": [], "count": 0}
+
+    results = []
+    for target in targets:
+        try:
+            plan_result = _plan(cursor, target, conn, config)
+            expected = plan_result.get("expected_cost", {})
+            results.append({
+                "target": target,
+                "target_label": plan_result.get("resolved_target", {}).get("label", ""),
+                "cost_tokens": expected.get("tokens", 0),
+                "risk": expected.get("risk", 0.0),
+                "steps": expected.get("steps", 0),
+                "path": plan_result.get("path", []),
+                "traversal": plan_result.get("traversal", []),
+                "high_uncertainty": plan_result.get("high_uncertainty", False),
+            })
+        except NoPathError:
+            results.append({"target": target, "error": "No path found"})
+        except Exception as exc:
+            results.append({"target": target, "error": str(exc)})
+
+    results.sort(key=lambda r: r.get("cost_tokens", float("inf")))
+    return {"ok": True, "results": results, "count": len(results), "from": cursor}
+
+
+def optimize(
+    project: str,
+    conn: sqlite3.Connection,
+    config: dict[str, Any] | None = None,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    config = config or {}
+    if not cursor:
+        root = conn.execute(
+            "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+            (project,),
+        ).fetchone()
+        cursor = root["id"] if root else None
+    if not cursor:
+        return {"ok": True, "optimal_order": [], "total_cost": 0, "count": 0}
+
+    remaining = [dict(r) for r in conn.execute(
+        "SELECT id, label FROM nodes WHERE project = ? AND status NOT IN ('done', 'blocked', 'superseded') AND id != ?",
+        (project, cursor),
+    ).fetchall()]
+
+    if not remaining:
+        return {"ok": True, "optimal_order": [], "total_cost": 0, "count": 0}
+
+    unvisited = set(r["id"] for r in remaining)
+    label_map = {r["id"]: r["label"] for r in remaining}
+    current = cursor
+    order: list[dict[str, Any]] = []
+    total_cost = 0.0
+
+    while unvisited:
+        best_next = None
+        best_cost = float("inf")
+        best_path = None
+        for sid in unvisited:
+            try:
+                plan_result = _plan(current, sid, conn, config)
+                cost = plan_result.get("expected_cost", {}).get("tokens", float("inf"))
+                if cost < best_cost:
+                    best_cost = cost
+                    best_next = sid
+                    best_path = plan_result.get("path", [])
+            except NoPathError:
+                continue
+            except Exception:
+                continue
+        if best_next is None:
+            break
+        order.append({
+            "id": best_next,
+            "label": label_map.get(best_next, ""),
+            "cost_from_previous": best_cost,
+            "cumulative_cost": total_cost + best_cost,
+            "path": best_path,
+        })
+        total_cost += best_cost
+        unvisited.discard(best_next)
+        current = best_next
+
+    return {
+        "ok": True,
+        "optimal_order": order,
+        "total_cost": total_cost,
+        "count": len(order),
+        "remaining_unreachable": len(unvisited),
+        "from": cursor,
     }

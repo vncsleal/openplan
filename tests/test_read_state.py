@@ -33,10 +33,10 @@ def _make_node(conn: sqlite3.Connection, project: str = "test", label: str = "te
     return sid
 
 
-def _edge(conn: sqlite3.Connection, source: str, target: str, action: str = "transition") -> None:
+def _edge(conn: sqlite3.Connection, source: str, target: str, action: str = "transition", prob: float = 0.8, cost_tokens: float = 10000) -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob) VALUES (?, ?, ?, 0.8)",
-        (source, target, action),
+        "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob) VALUES (?, ?, ?, ?, 0.1, ?)",
+        (source, target, action, cost_tokens, prob),
     )
 
 
@@ -226,3 +226,60 @@ def test_reconstruct_next_target(conn: sqlite3.Connection) -> None:
     result = reconstruct("p1", conn, cursor=a)
     assert result["next_target"]["id"] == b
     assert result["next_target"]["label"] == "do this next"
+
+
+def test_compare_paths_basic(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="start")
+    b = _make_node(conn, project="p1", label="cheap target")
+    c = _make_node(conn, project="p1", label="expensive target")
+    _edge(conn, a, b, "implement", prob=0.9, cost_tokens=5000)
+    _edge(conn, a, c, "implement", prob=0.8, cost_tokens=15000)
+
+    from openplan.core.read import compare_paths
+    result = compare_paths("p1", conn, [c, b], cursor=a)
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert result["results"][0]["target"] == b
+    assert result["results"][0]["cost_tokens"] <= result["results"][1]["cost_tokens"]
+
+
+def test_optimize_basic(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    b = _make_node(conn, project="p1", label="step 1")
+    c = _make_node(conn, project="p1", label="step 2")
+    _edge(conn, a, b, "implement", cost_tokens=5000)
+    _edge(conn, b, c, "implement", cost_tokens=3000)
+
+    from openplan.core.read import optimize
+    result = optimize("p1", conn, cursor=a)
+    assert result["ok"] is True
+    assert result["count"] == 2
+    assert len(result["optimal_order"]) == 2
+    assert result["total_cost"] > 0
+
+
+def test_optimize_all_done(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    conn.execute("UPDATE nodes SET status = 'done' WHERE id = ?", (a,))
+
+    from openplan.core.read import optimize
+    result = optimize("p1", conn, cursor=a)
+    assert result["count"] == 0
+    assert result["optimal_order"] == []
+
+
+def test_optimize_skips_done_blocked(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    b = _make_node(conn, project="p1", label="active")
+    c = _make_node(conn, project="p1", label="blocked")
+    d = _make_node(conn, project="p1", label="done")
+    _edge(conn, a, b)
+    _edge(conn, a, c)
+    _edge(conn, a, d)
+    conn.execute("UPDATE nodes SET status = 'blocked' WHERE id = ?", (c,))
+    conn.execute("UPDATE nodes SET status = 'done' WHERE id = ?", (d,))
+
+    from openplan.core.read import optimize
+    result = optimize("p1", conn, cursor=a)
+    assert result["count"] == 1
+    assert result["optimal_order"][0]["id"] == b

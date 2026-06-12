@@ -28,7 +28,11 @@ from openplan.core.analytics import compute_analytics
 from openplan.core.errors import OpenPlanError
 from openplan.core.graph import _graph_health, search as _search
 from openplan.core.insight_propagation import propagate as _propagate
+from openplan.core.learning import tune as _tune
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
+from openplan.core.planner import plan as _plan
+from openplan.core.read import compare_paths as _compare_paths
+from openplan.core.read import optimize as _optimize
 from openplan.core.read import read_state as _read_state
 from openplan.core.read import reconstruct as _reconstruct
 from openplan.core.read import update_state as _update_state
@@ -326,6 +330,52 @@ async def _handle_reconstruct(args: dict) -> CallToolResult:
         _read_lock_release()
 
 
+async def _handle_plan(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        project = args["project"]
+        cursor = _get_cursor(project)
+        if not cursor:
+            return err("NO_CURSOR", f"No position in {project} — call init first")
+        target = args["target"]
+        constraints = args.get("constraints")
+        result = _plan(cursor, target, _get_conn(), _config, constraints=constraints, session_id=_SESSION_ID)
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_compare_paths(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        project = args["project"]
+        cursor = _get_cursor(project)
+        result = _compare_paths(project, _get_conn(), args["targets"], config=_config, cursor=cursor)
+        return ok(result, project=project)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_optimize(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        project = args["project"]
+        cursor = _get_cursor(project)
+        result = _optimize(project, _get_conn(), config=_config, cursor=cursor)
+        return ok(result, project=project)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_tune(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    try:
+        result = _tune(_get_conn(), _config)
+        return ok(result)
+    finally:
+        _write_lock_release()
+
+
 HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
@@ -334,6 +384,10 @@ HANDLERS = {
     "read_state": _handle_read_state,
     "update_state": _handle_update_state,
     "reconstruct": _handle_reconstruct,
+    "plan": _handle_plan,
+    "compare_paths": _handle_compare_paths,
+    "optimize": _handle_optimize,
+    "tune": _handle_tune,
 }
 
 
@@ -446,6 +500,7 @@ async def main() -> None:
     _write_lock_acquire()
     try:
         _propagate(_conn, _config)
+        _tune(_conn, _config)
     finally:
         _write_lock_release()
 
@@ -479,7 +534,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.2.3",
+                server_version="0.2.4",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )
