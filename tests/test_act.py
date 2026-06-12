@@ -122,3 +122,57 @@ def test_act_invalid_action(conn: sqlite3.Connection, config: dict) -> None:
 
     with pytest.raises(InvalidActionError):
         act(src, "nonexistent", conn, config)
+
+
+def test_act_auto_status(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn)
+    tgt = _make_node(conn)
+    _edge(conn, src, tgt, "implement")
+
+    act(src, "implement", conn, config)
+
+    src_status = conn.execute("SELECT status FROM nodes WHERE id = ?", (src,)).fetchone()["status"]
+    tgt_status = conn.execute("SELECT status FROM nodes WHERE id = ?", (tgt,)).fetchone()["status"]
+    assert src_status == "done"
+    assert tgt_status == "in_progress"
+
+
+def test_act_auto_status_respects_blocked(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn)
+    tgt = _make_node(conn)
+    _edge(conn, src, tgt, "implement")
+    conn.execute("UPDATE nodes SET status = 'blocked' WHERE id = ?", (src,))
+
+    act(src, "implement", conn, config)
+
+    src_status = conn.execute("SELECT status FROM nodes WHERE id = ?", (src,)).fetchone()["status"]
+    tgt_status = conn.execute("SELECT status FROM nodes WHERE id = ?", (tgt,)).fetchone()["status"]
+    assert src_status == "blocked"
+    assert tgt_status == "in_progress"
+
+
+def test_act_reasoning_new_state(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn)
+    reasoning = {"type": "hypothesis", "question": "test?", "tags": ["test"]}
+
+    result = act(src, "investigate", conn, config, target="Explore X", reasoning=reasoning)
+
+    tgt_id = result["next_state"]
+    props = json.loads(conn.execute("SELECT props FROM nodes WHERE id = ?", (tgt_id,)).fetchone()["props"])
+    assert props["type"] == "hypothesis"
+    assert props["question"] == "test?"
+    assert props["tags"] == ["test"]
+
+
+def test_act_reasoning_existing_state(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn)
+    tgt = _make_node(conn)
+    _edge(conn, src, tgt, "implement")
+    reasoning = {"conclusion": "revisited", "tags": ["updated"]}
+    conn.execute("UPDATE nodes SET label = 'Existing target' WHERE id = ?", (tgt,))
+
+    result = act(src, "implement", conn, config, target=tgt, reasoning=reasoning)
+
+    props = json.loads(conn.execute("SELECT props FROM nodes WHERE id = ?", (tgt,)).fetchone()["props"])
+    assert props["conclusion"] == "revisited"
+    assert props["tags"] == ["updated"]

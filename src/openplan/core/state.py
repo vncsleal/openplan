@@ -204,17 +204,19 @@ def act(
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
             if not tgt:
                 target_id = _ensure_node(src["project"], target, conn)
-                if reasoning:
-                    reasoning_payload = ReasoningPayload.from_props(reasoning)
-                    reasoning_payload.validate()
-                    current_props = {}
-                    merged = reasoning_payload.merge_into_props(current_props)
-                    conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
-                                 (json.dumps(merged), _now(), target_id))
             conn.execute(
                 "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
                 (state_id, target_id, action, _now(), _now()),
             )
+            if reasoning:
+                reasoning_payload = ReasoningPayload.from_props(reasoning)
+                reasoning_payload.validate()
+                existing_props = json.loads(
+                    conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone()["props"]
+                )
+                merged = reasoning_payload.merge_into_props(existing_props)
+                conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
+                             (json.dumps(merged), _now(), target_id))
         else:
             matching = conn.execute(
                 "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)

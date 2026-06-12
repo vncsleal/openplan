@@ -296,6 +296,7 @@ async def _handle_read_state(args: dict) -> CallToolResult:
 
 async def _handle_update_state(args: dict) -> CallToolResult:
     _write_lock_acquire()
+    notif_project: str | None = None
     try:
         result = _update_state(
             args["state_id"], _get_conn(),
@@ -303,13 +304,15 @@ async def _handle_update_state(args: dict) -> CallToolResult:
             props_patch=args.get("props_patch"),
             session_id=_SESSION_ID,
         )
+        if result.get("state_id"):
+            row = _conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
+            if row:
+                notif_project = row["project"]
         return ok(result)
     finally:
         _write_lock_release()
-    if result.get("state_id"):
-        state_row = _conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
-        if state_row:
-            await _push_resource_notification(state_row["project"])
+    if notif_project:
+        await _push_resource_notification(notif_project)
 
 
 async def _handle_reconstruct(args: dict) -> CallToolResult:
