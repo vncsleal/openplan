@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import string
 from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
@@ -437,6 +438,23 @@ def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] |
     return result
 
 
+def _tokenize(text: str) -> list[str]:
+    tokens = text.lower().split()
+    cleaned = []
+    for token in tokens:
+        t = token.strip(string.punctuation)
+        if t:
+            cleaned.append(t)
+    return cleaned
+
+
+def _token_score(query_tokens: list[str], text_token_set: set[str]) -> float:
+    if not query_tokens:
+        return 0.0
+    matches = sum(1 for qt in query_tokens if qt in text_token_set)
+    return matches / len(query_tokens)
+
+
 def search(query: str, conn: sqlite3.Connection) -> dict[str, Any]:
     projects = [dict(r) for r in conn.execute(
         "SELECT n.project, n.id AS root_id, n.label, COUNT(e.id) AS events "
@@ -444,24 +462,60 @@ def search(query: str, conn: sqlite3.Connection) -> dict[str, Any]:
         "WHERE n.id IN (SELECT MIN(n2.id) FROM nodes n2 GROUP BY n2.project) "
         "GROUP BY n.project ORDER BY events DESC"
     ).fetchall()]
-    like_q = f"%{query}%"
-    matched_states = [dict(r) for r in conn.execute(
-        "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
-        (like_q,),
+
+    query_tokens = _tokenize(query)
+
+    all_nodes = [dict(r) for r in conn.execute(
+        "SELECT id, label, project, activation FROM nodes"
     ).fetchall()]
+
+    scored = []
+    for node in all_nodes:
+        label_tokens = _tokenize(node["label"])
+        score = _token_score(query_tokens, set(label_tokens))
+        if score > 0:
+            scored.append((score, node["activation"], node))
+
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+    matched_states = [s[2] for s in scored[:20]]
+
+    if not matched_states:
+        like_q = f"%{query}%"
+        matched_states = [dict(r) for r in conn.execute(
+            "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
+            (like_q,),
+        ).fetchall()]
+
     insights = []
-    for r in conn.execute(
-        "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
-        "JOIN nodes n ON n.id = e.source_id"
-    ).fetchall():
-        try:
-            wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
-            for entry in wh:
-                text = entry.get("insight", "")
-                if query.lower() in text.lower():
-                    insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
-        except (json.JSONDecodeError, TypeError):
-            pass
+    if query_tokens:
+        for r in conn.execute(
+            "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
+            "JOIN nodes n ON n.id = e.source_id"
+        ).fetchall():
+            try:
+                wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
+                for entry in wh:
+                    text = entry.get("insight", "")
+                    insight_tokens = _tokenize(text)
+                    if _token_score(query_tokens, set(insight_tokens)) > 0:
+                        insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    if not insights:
+        for r in conn.execute(
+            "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
+            "JOIN nodes n ON n.id = e.source_id"
+        ).fetchall():
+            try:
+                wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
+                for entry in wh:
+                    text = entry.get("insight", "")
+                    if query.lower() in text.lower():
+                        insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     result: dict[str, Any] = {"query": query, "projects": projects, "count": len(projects), "states": matched_states}
     if insights:
         result["insights"] = insights
