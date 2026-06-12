@@ -24,7 +24,7 @@ from mcp.types import (
 )
 
 from openplan.config import load_config
-from openplan.core.analytics import compute_analytics
+from openplan.core.analytics import compute_analytics, self_diagnose as _self_diagnose
 from openplan.core.errors import OpenPlanError
 from openplan.core.graph import _graph_health, search as _search
 from openplan.core.insight_propagation import propagate as _propagate
@@ -40,6 +40,7 @@ from openplan.core.reasoning import STATUS_VALUES, ReasoningPayload
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
 from openplan.core.state import act as _act
+from openplan.core.state import abandon as _abandon
 from openplan.core.state import init_project as _init
 from openplan.core.telemetry import get_telemetry
 from openplan.db.connection import get_connection
@@ -191,7 +192,7 @@ async def _handle_init(args: dict) -> CallToolResult:
     _write_lock_acquire()
     project = args["project"]
     try:
-        result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
+        result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID, project_type=args.get("project_type", ""), goal=args.get("goal", ""))
         if result.get("state_id"):
             _set_cursor(project, result["state_id"])
     finally:
@@ -221,7 +222,7 @@ async def _handle_act(args: dict) -> CallToolResult:
             if p_row["project"] != project:
                 return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
             source = parent
-        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
+        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID, postconditions=args.get("postconditions"))
         need_notify = bool(result.get("next_state"))
         if need_notify:
             _set_cursor(project, result["next_state"])
@@ -376,6 +377,51 @@ async def _handle_tune(args: dict) -> CallToolResult:
         _write_lock_release()
 
 
+async def _handle_set_goal(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    try:
+        project = args["project"]
+        conn = _get_conn()
+        row = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
+        if not row:
+            return err("NO_PROJECT", f"Project {project} not found — call init first")
+        goal = args.get("goal", "")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (f"goal:{project}", json.dumps({"text": goal, "target_state_id": args.get("target_state_id")})),
+        )
+        conn.commit()
+        return ok({"ok": True, "project": project, "goal": goal})
+    finally:
+        _write_lock_release()
+
+
+async def _handle_abandon(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    notif_project: str | None = None
+    try:
+        conn = _get_conn()
+        result = _abandon(args["state_id"], conn, session_id=_SESSION_ID)
+        row = conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
+        if row:
+            notif_project = row["project"]
+        return ok(result)
+    finally:
+        _write_lock_release()
+    if notif_project:
+        await _push_resource_notification(notif_project)
+
+
+async def _handle_diagnose(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    try:
+        conn = _get_conn()
+        result = _self_diagnose(conn)
+        return ok(result)
+    finally:
+        _write_lock_release()
+
+
 HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
@@ -388,6 +434,9 @@ HANDLERS = {
     "compare_paths": _handle_compare_paths,
     "optimize": _handle_optimize,
     "tune": _handle_tune,
+    "set_goal": _handle_set_goal,
+    "abandon": _handle_abandon,
+    "diagnose": _handle_diagnose,
 }
 
 
@@ -460,15 +509,15 @@ async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetP
                 role="user",
                 content=TextContent(
                     type="text",
-                    text=f"""You have access to OpenPlan, an MCP server with 4 tools:
+                    text=f"""You have access to OpenPlan, an MCP server for AI-native project planning.
 
-init(project, label) — Create a new project context (idempotent).
-act(project, action, target, parent?, evidence?, thought?, expected_cost?) — Traverse to a target or create one. Auto-calibrates. Use `parent` to create siblings.
-recommend(project?, goal?, max_cost?, cursor?) — Find the best next target with an A* plan. Omit project for cross-project.
-search(query?) — Find projects, states, and insights across everything. Omit query for full project index.
+init(project, label, project_type?, goal?) — Create a new project context (idempotent). Set project_type for cost baselines (e.g. 'python_cli', 'web_app'). Set goal for the desired end state.
+act(project, action, target, parent?, evidence?, thought?, expected_cost?, postconditions?) — Traverse to a target or create one. Auto-calibrates. Edge preconditions are validated automatically. Postconditions are stored on the target state.
+recommend(project?, goal?, max_cost?, cursor?) — Find the best next target. When a goal is set, finds the cheapest A* path from cursor to goal-aligned states. Without a goal, uses activation scoring.
+search(query?, project?, limit?) — Find projects, states, and insights.
 
 Your current project is `{project}`.
-Start with init if it doesn't exist, then act to create work items, recommend to find what to do next, and search to find relevant knowledge.""",
+Start with init (with optional goal), then act to create work items, recommend to find what to do next.""",
                 ),
             ),
         ],
@@ -534,7 +583,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.2.4",
+                server_version="0.2.6",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )

@@ -246,11 +246,32 @@ def reconstruct(
         except (json.JSONDecodeError, TypeError):
             pass
 
+    goal: dict[str, Any] | None = None
+    goal_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
+    if goal_row:
+        try:
+            goal = json.loads(goal_row["value"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    node_tree: dict[str, dict[str, Any]] = {}
+    for n in all_nodes:
+        node_tree[n["id"]] = {"id": n["id"], "label": n["label"], "status": n.get("status", "pending"), "children": []}
+    for n in all_nodes:
+        pid = n.get("parent_id")
+        if pid and pid in node_tree:
+            node_tree[pid]["children"].append(node_tree[n["id"]])
+    tree_roots = [v for k, v in node_tree.items() if not any(
+        n2.get("parent_id") == k for n2 in all_nodes
+    )]
+
     return {
         "ok": True,
         "project": project,
         "cursor": cursor,
         "root": {"id": root["id"], "label": root["label"]} if root else None,
+        "goal": goal,
+        "tree": tree_roots,
         "recent_path": recent_path,
         "frontier": frontier,
         "blockers": blockers,

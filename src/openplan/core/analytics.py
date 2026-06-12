@@ -94,3 +94,63 @@ def compute_analytics(conn: sqlite3.Connection) -> dict[str, Any]:
     _save_snapshot(conn, snapshot)
 
     return {"total_projects": len(projects_data), "projects": projects_data, "anomalies": anomalies}
+
+
+def _record_diagnostic(conn: sqlite3.Connection, metric: str, value: float, threshold: float, severity: str, detail: str) -> None:
+    conn.execute(
+        "INSERT INTO self_diagnostics (metric, value, threshold, severity, detail) VALUES (?, ?, ?, ?, ?)",
+        (metric, value, threshold, severity, detail),
+    )
+
+
+def self_diagnose(conn: sqlite3.Connection) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes").fetchone()["cnt"]
+    if total == 0:
+        return {"ok": True, "issues_found": 0, "issues": []}
+
+    project_count = conn.execute("SELECT COUNT(DISTINCT project) AS cnt FROM nodes").fetchone()["cnt"]
+    edge_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM edges"
+    ).fetchone()["cnt"]
+    cal_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM edges WHERE weight_history IS NOT NULL AND weight_history != '[]'"
+    ).fetchone()["cnt"]
+    orphan_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM nodes WHERE NOT EXISTS (SELECT 1 FROM edges WHERE source_id = nodes.id)"
+    ).fetchone()["cnt"] - project_count
+
+    cal_rate = cal_count / max(edge_count, 1)
+    orphan_rate = orphan_count / max(total - project_count, 1)
+
+    _record_diagnostic(conn, "global_calibration_rate", cal_rate, 0.3, "high" if cal_rate < 0.3 else "info", f"{cal_count}/{edge_count} edges calibrated")
+    _record_diagnostic(conn, "global_orphan_rate", orphan_rate, 0.5, "high" if orphan_rate > 0.5 else "info", f"{orphan_count} orphans across {project_count} projects")
+    _record_diagnostic(conn, "projects", float(project_count), 0, "info", f"{project_count} projects, {total} states, {edge_count} edges")
+
+    if cal_rate < 0.3:
+        issues.append({"code": "LOW_CALIBRATION", "severity": "high", "message": f"Only {cal_rate:.0%} of edges calibrated", "value": cal_rate, "threshold": 0.3})
+    if orphan_rate > 0.5:
+        issues.append({"code": "HIGH_ORPHAN_RATE", "severity": "high", "message": f"{orphan_rate:.0%} of non-root states are orphans", "value": orphan_rate, "threshold": 0.5})
+
+    for row in conn.execute(
+        "SELECT source_id, target_id, action, cost_tokens, weight_history FROM edges ORDER BY updated_at DESC LIMIT 100"
+    ).fetchall():
+        try:
+            wh = json.loads(row["weight_history"]) if isinstance(row["weight_history"], str) else (row["weight_history"] or [])
+            real_entries = [w for w in wh if not w.get("auto")]
+            if len(real_entries) >= 3:
+                predicted = row["cost_tokens"]
+                actuals = [w["actual_cost"]["tokens"] for w in real_entries]
+                avg_actual = sum(actuals) / len(actuals)
+                drift = abs(predicted - avg_actual) / max(predicted, 1)
+                if drift > 0.5:
+                    issues.append({
+                        "code": "HIGH_COST_DRIFT",
+                        "severity": "medium",
+                        "message": f"Edge {row['source_id']}->{row['target_id']} ({row['action']}): predicted {predicted:.0f}, avg actual {avg_actual:.0f}",
+                        "value": drift, "threshold": 0.5,
+                    })
+        except (json.JSONDecodeError, TypeError, KeyError):
+            pass
+
+    return {"ok": True, "issues_found": len(issues), "issues": issues}

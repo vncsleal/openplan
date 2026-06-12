@@ -125,6 +125,38 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE nodes ADD COLUMN {col}")
         except sqlite3.OperationalError:
             pass
+    for col in ("goal TEXT NOT NULL DEFAULT ''", "project_type TEXT NOT NULL DEFAULT ''", "terminal INTEGER NOT NULL DEFAULT 0"):
+        try:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    for col in ("parent_id TEXT REFERENCES nodes(id)",):
+        try:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cost_baselines (
+            project_type TEXT NOT NULL,
+            action       TEXT NOT NULL,
+            cost_tokens  REAL NOT NULL DEFAULT 10000.0,
+            cost_risk    REAL NOT NULL DEFAULT 0.1,
+            sample_count INTEGER NOT NULL DEFAULT 1,
+            updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (project_type, action)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS self_diagnostics (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            metric      TEXT NOT NULL,
+            value       REAL NOT NULL,
+            threshold   REAL NOT NULL DEFAULT 0.0,
+            severity    TEXT NOT NULL DEFAULT 'info',
+            detail      TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+    """)
     try_init_vec0(conn)
 
 

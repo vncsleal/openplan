@@ -71,3 +71,18 @@ class NoOptionsError(OpenPlanError):
 class InvalidStatusError(OpenPlanError):
     def __init__(self, status: str) -> None:
         super().__init__("INVALID_STATUS", f"Invalid status value: '{status}'. Must be one of: pending, in_progress, done, blocked, superseded")
+
+
+class PreconditionError(OpenPlanError):
+    def __init__(self, state_id: str, action: str, precondition: str) -> None:
+        super().__init__("PRECONDITION_FAILED", f"Cannot {action} from {state_id}: precondition '{precondition}' not satisfied")
+
+
+class TerminalStateError(OpenPlanError):
+    def __init__(self, state_id: str) -> None:
+        super().__init__("TERMINAL_STATE", f"State {state_id} is terminal and cannot transition further")
+
+
+class GoalNotFoundError(OpenPlanError):
+    def __init__(self, goal: str, project: str) -> None:
+        super().__init__("GOAL_NOT_FOUND", f"Goal '{goal}' not found in project '{project}'")

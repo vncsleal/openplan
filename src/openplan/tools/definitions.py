@@ -28,31 +28,35 @@ def t(
 
 
 _TOOLS: list[MCPTool] = [
-    t(
-        "init",
-        "Initialize Project",
-        "Create a new project context. Idempotent — returns the existing root state if the project already exists. Call this once to bootstrap before using act/recommend/search.",
-        {
-            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
-            "label": {"type": "string", "maxLength": 500, "description": "Optional root state label"},
-        },
-        ["project"],
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "ok": {"type": "boolean"},
-                "state_id": {"type": "string"},
-                "label": {"type": "string"},
-                "created": {"type": "boolean"},
-                "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        t(
+            "init",
+            "Initialize Project",
+            "Create a new project context. Idempotent — returns the existing root state if the project already exists. Call this once to bootstrap before using act/recommend/search. Optionally set a project_type for cost baselines, and a goal describing the desired end state.",
+            {
+                "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+                "label": {"type": "string", "maxLength": 500, "description": "Optional root state label"},
+                "project_type": {"type": "string", "maxLength": 100, "description": "Optional project type for cost baselines (e.g. 'python_cli', 'rust_library', 'web_app')"},
+                "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of the desired end state"},
             },
-            "required": ["ok", "state_id"],
-        },
-    ),
+            ["project"],
+            outputSchema={
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "state_id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "project_type": {"type": "string"},
+                    "goal": {"type": "string"},
+                    "created": {"type": "boolean"},
+                    "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                },
+                "required": ["ok", "state_id"],
+            },
+        ),
     t(
         "act",
         "Execute Action",
-        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph. Use parent to create siblings under a specific state. Automatically marks the source state as 'done' and the target as 'in_progress'.",
+        "Traverse from your current position to a target. If the target state doesn't exist, it's created automatically. Records evidence, thought, and auto-calibrates the edge cost. This is the only tool that changes the graph. Use parent to create siblings under a specific state. Automatically marks the source state as 'done' and the target as 'in_progress'. Edges with preconditions (conditions JSON field) are validated before acting. Postconditions are stored on the target state's props.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
             "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.)"},
@@ -61,6 +65,7 @@ _TOOLS: list[MCPTool] = [
             "evidence": {"type": "string", "maxLength": 2048, "description": "Optional evidence URL or description"},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
             "expected_cost": {"type": "object", "maxProperties": 10, "description": "Optional expected cost estimate"},
+            "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs describing what becomes true after this action. Stored in the target state's props."},
         },
         ["project", "action"],
         outputSchema={
@@ -77,10 +82,10 @@ _TOOLS: list[MCPTool] = [
     t(
         "recommend",
         "Recommend Best Target",
-        "Analyze the graph to find the highest-value target and plan an optimal A* path to it. Unlike plan, doesn't require a target — the system proactively recommends the best next state based on activation, visit counts, orphan status, and optional goal alignment. When project is omitted, searches across all projects.",
+        "Analyze the graph to find the highest-value target and plan an optimal A* path to it. When a goal is set (via init or passed directly), uses goal-oriented planning: finds the cheapest path from cursor to states matching the goal. Without a goal, uses the activation+orphan scoring system to find the best next state. When project is omitted, searches across all projects.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug (optional; omit for cross-project)"},
-            "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of what to work on"},
+            "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of what to work on. Overrides the project's stored goal."},
             "max_cost": {"type": "number", "description": "Optional max cost constraint"},
             "cursor": {"type": "string", "maxLength": 20, "description": "Optional cursor override"},
         },
@@ -175,6 +180,8 @@ _TOOLS: list[MCPTool] = [
                 "project": {"type": "string"},
                 "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "root": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                "goal": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                "tree": {"type": "array"},
                 "recent_path": {"type": "array"},
                 "frontier": {"type": "array"},
                 "blockers": {"type": "array"},
@@ -272,6 +279,59 @@ _TOOLS: list[MCPTool] = [
                 "recommendations": {"type": "object"},
             },
             "required": ["ok", "actions_tuned"],
+        },
+    ),
+    t(
+        "abandon",
+        "Abandon Branch",
+        "Mark a state and its descendants as 'superseded'. Dead ends and abandoned approaches are preserved for history but excluded from recommendations. Returns count of states affected.",
+        {
+            "state_id": {"type": "string", "maxLength": 20, "description": "Root state ID of the branch to abandon"},
+        },
+        ["state_id"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "state_id": {"type": "string"},
+                "states_affected": {"type": "integer"},
+            },
+            "required": ["ok", "state_id"],
+        },
+    ),
+    t(
+        "set_goal",
+        "Set Project Goal",
+        "Set or update the project's goal — a natural language description of the desired end state. Used by plan() and optimize() to find the optimal path to project completion.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "goal": {"type": "string", "maxLength": 1000, "description": "Natural language description of the goal"},
+            "target_state_id": {"type": "string", "maxLength": 20, "description": "Optional target state ID for the goal"},
+        },
+        ["project", "goal"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "project": {"type": "string"},
+                "goal": {"type": "string"},
+            },
+            "required": ["ok", "project"],
+        },
+    ),
+    t(
+        "diagnose",
+        "Self-Diagnose System",
+        "Run system diagnostics and store results in the self_diagnostics table. Checks: calibration accuracy, orphan rates, stale states, cost drift, recommendation conversion. Returns issues found.",
+        {},
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "issues_found": {"type": "integer"},
+                "issues": {"type": "array"},
+            },
+            "required": ["ok", "issues_found"],
         },
     ),
 ]

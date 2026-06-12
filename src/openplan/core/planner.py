@@ -21,7 +21,46 @@ def _actual_tokens(entry: dict) -> float:
     return entry["actual_cost"]["tokens"]
 
 
-def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any]) -> float:
+def _get_predictive_cost(action: str, project_type: str, conn: sqlite3.Connection) -> float | None:
+    if not project_type:
+        return None
+    row = conn.execute(
+        "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines WHERE project_type = ? AND action = ?",
+        (project_type, action),
+    ).fetchone()
+    if row:
+        return row["cost_tokens"] * (1 + row["cost_risk"])
+    return None
+
+
+def _meets_preconditions(edge_data: dict[str, Any], conn: sqlite3.Connection, config: dict[str, Any] | None = None) -> bool:
+    raw = edge_data.get("conditions", "")
+    if not raw:
+        return True
+    try:
+        conditions = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return True
+    if not isinstance(conditions, list):
+        return True
+    source_id = edge_data["source_id"]
+    node = conn.execute("SELECT props FROM nodes WHERE id = ?", (source_id,)).fetchone()
+    if not node:
+        return False
+    try:
+        props = json.loads(node["props"]) if isinstance(node["props"], str) else node["props"]
+    except (json.JSONDecodeError, TypeError):
+        return False
+    for cond in conditions:
+        if isinstance(cond, dict):
+            field = cond.get("field", "")
+            expected = cond.get("value")
+            if props.get(field) != expected:
+                return False
+    return True
+
+
+def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any], conn: sqlite3.Connection | None = None) -> float:
     raw_cost = edge_data["cost_tokens"]
     wh_raw = edge_data.get("weight_history") or "[]"
     try:
@@ -34,13 +73,14 @@ def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any]) -> float:
     smoothing = learn_cfg.get("smoothing_factor", 0.3)
     min_acts = learn_cfg.get("min_acts_for_calibration", 1)
 
+    learned = raw_cost
     if len(real_entries) >= min_acts:
         actual_costs = [_actual_tokens(wh) for wh in real_entries]
         actual_avg = sum(actual_costs) / len(actual_costs)
         learned = smoothing * actual_avg + (1 - smoothing) * raw_cost
-    else:
-        learned = raw_cost
-    return learned * (1 + edge_data["cost_risk"])
+
+    effective_cost = learned * (1 + edge_data["cost_risk"])
+    return effective_cost
 
 
 def plan(
@@ -142,7 +182,9 @@ def plan(
             neighbor = e_data["target_id"]
             if neighbor in avoid_states:
                 continue
-            edge_cost = _get_edge_cost(e_data, config)
+            if not _meets_preconditions(e_data, conn, config):
+                continue
+            edge_cost = _get_edge_cost(e_data, config, conn)
             new_g = g + edge_cost
             new_prob = cum_prob * e_data["prob"]
             if max_cost is not None and new_g > max_cost:

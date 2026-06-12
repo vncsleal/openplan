@@ -13,7 +13,7 @@ _log = logging.getLogger("openplan.state")
 from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
 from openplan.core.errors import (
     CycleDetectedError, InvalidActionError, InvalidStateError,
-    NoOptionsError, OpenPlanError,
+    NoOptionsError, OpenPlanError, PreconditionError, TerminalStateError,
 )
 from openplan.core.graph import _get_frontier_states, _invalidate_graph_cache
 from openplan.core.reasoning import ReasoningPayload
@@ -158,7 +158,7 @@ def _detect_cycle(conn: sqlite3.Connection, source_id: str, target_id: str, acti
     return row is not None
 
 
-def init_project(project: str, label: str | None, conn: sqlite3.Connection, session_id: str = "") -> dict[str, Any]:
+def init_project(project: str, label: str | None, conn: sqlite3.Connection, session_id: str = "", project_type: str = "", goal: str = "") -> dict[str, Any]:
     owned_init = _safe_savepoint(conn, "init_tx")
     try:
         existing = conn.execute(
@@ -166,20 +166,78 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
             (project,),
         ).fetchone()
         if existing:
+            if goal:
+                conn.execute("UPDATE nodes SET goal = ?, updated_at = ? WHERE id = ?", (goal, _now(), existing["id"]))
+                _record_event(conn, existing["id"], project, "goal_set", {"goal": goal}, session_id)
+            if project_type:
+                conn.execute("UPDATE nodes SET project_type = ?, updated_at = ? WHERE id = ?", (project_type, _now(), existing["id"]))
             _safe_release(conn, "init_tx", owned_init)
             return {"ok": True, "state_id": existing["id"], "label": existing["label"], "created": False}
         sid = _ensure_node(project, label or project, conn)
         now = _now()
+        if project_type:
+            conn.execute("UPDATE nodes SET project_type = ?, updated_at = ? WHERE id = ?", (project_type, now, sid))
+        if goal:
+            conn.execute("UPDATE nodes SET goal = ?, updated_at = ? WHERE id = ?", (goal, now, sid))
+            _record_event(conn, sid, project, "goal_set", {"goal": goal}, session_id)
         conn.execute("UPDATE nodes SET updated_at = ? WHERE id = ?", (now, sid))
-        _record_event(conn, sid, project, "init", {"label": label or project}, session_id)
+        _record_event(conn, sid, project, "init", {"label": label or project, "project_type": project_type, "goal": goal}, session_id)
         _safe_release(conn, "init_tx", owned_init)
-        return {"ok": True, "state_id": sid, "label": label or project, "created": True}
+        return {"ok": True, "state_id": sid, "label": label or project, "project_type": project_type, "goal": goal, "created": True}
     except OpenPlanError:
         _safe_rollback(conn, "init_tx", owned_init)
         raise
     except Exception:
         _safe_rollback(conn, "init_tx", owned_init)
         raise
+
+
+def _check_preconditions(edge: dict, conn: sqlite3.Connection) -> None:
+    raw = edge.get("conditions", "")
+    if not raw:
+        return
+    try:
+        conditions = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(conditions, list):
+        return
+    for cond in conditions:
+        if isinstance(cond, dict):
+            field = cond.get("field", "")
+            expected = cond.get("value")
+            source_id = edge["source_id"]
+            row = conn.execute("SELECT props FROM nodes WHERE id = ?", (source_id,)).fetchone()
+            if row:
+                try:
+                    props = json.loads(row["props"]) if isinstance(row["props"], str) else row["props"]
+                except (json.JSONDecodeError, TypeError):
+                    props = {}
+                actual = props.get(field)
+                if actual != expected:
+                    raise PreconditionError(source_id, edge.get("action", ""), f"{field}={expected}")
+
+
+def _update_cost_baseline(project_type: str, action: str, cost_tokens: float, cost_risk: float, conn: sqlite3.Connection) -> None:
+    if not project_type:
+        return
+    existing = conn.execute(
+        "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines WHERE project_type = ? AND action = ?",
+        (project_type, action),
+    ).fetchone()
+    if existing:
+        n = existing["sample_count"] + 1
+        avg_tokens = (existing["cost_tokens"] * existing["sample_count"] + cost_tokens) / n
+        avg_risk = (existing["cost_risk"] * existing["sample_count"] + cost_risk) / n
+        conn.execute(
+            "UPDATE cost_baselines SET cost_tokens = ?, cost_risk = ?, sample_count = ?, updated_at = ? WHERE project_type = ? AND action = ?",
+            (round(avg_tokens, 2), round(avg_risk, 4), n, _now(), project_type, action),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO cost_baselines (project_type, action, cost_tokens, cost_risk, sample_count, updated_at) VALUES (?, ?, ?, ?, 1, ?)",
+            (project_type, action, cost_tokens, cost_risk, _now()),
+        )
 
 
 def act(
@@ -193,12 +251,16 @@ def act(
     expected_cost: dict | None = None,
     session_id: str = "",
     reasoning: dict | None = None,
+    postconditions: dict | None = None,
 ) -> dict[str, Any]:
     owned = _safe_savepoint(conn, "act_tx")
     try:
-        src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
-        if not src:
+        raw_src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
+        if not raw_src:
             raise InvalidStateError(state_id)
+        src = dict(raw_src)
+        if src.get("terminal"):
+            raise TerminalStateError(state_id)
         target_id = target
         if target:
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
@@ -235,6 +297,8 @@ def act(
             raise InvalidActionError(state_id, action)
         edge = dict(edge)
 
+        _check_preconditions(edge, conn)
+
         if _detect_cycle(conn, state_id, target_id, action):
             raise CycleDetectedError(state_id, target_id)
 
@@ -246,6 +310,18 @@ def act(
         _record_event(conn, state_id, src["project"], "acted", payload, session_id)
         _increment_visit(target_id, conn)
         _auto_calibrate(conn, edge, target_id)
+        if postconditions:
+            current_props = json.loads(
+                conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone()["props"]
+            ) if conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone() else {}
+            merged = dict(current_props)
+            merged.update(postconditions)
+            conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
+                         (json.dumps(merged), _now(), target_id))
+        cost_actual = {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)}
+        project_type = src.get("project_type", "") or ""
+        if project_type:
+            _update_cost_baseline(project_type, action, cost_actual["tokens"], cost_actual["risk"], conn)
         _prune_stale_branches(state_id, conn, session_id)
         conn.execute("UPDATE nodes SET status = 'done', updated_at = ? WHERE id = ? AND status NOT IN ('blocked', 'superseded')", (_now(), state_id))
         conn.execute("UPDATE nodes SET status = 'in_progress', updated_at = ? WHERE id = ? AND status NOT IN ('done', 'blocked', 'superseded')", (_now(), target_id))
@@ -255,7 +331,6 @@ def act(
         get_activation(state_id, conn, config)
         get_activation(target_id, conn, config)
 
-        cost_actual = {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)}
         cost_delta = None
         if expected_cost is not None:
             cost_delta = {
@@ -336,3 +411,36 @@ def branch(
     _invalidate_graph_cache()
 
     return {"ok": True, "branch_id": branch_id, "options": len(options), "states_created": states_created}
+
+
+def abandon(state_id: str, conn: sqlite3.Connection, session_id: str = "") -> dict[str, Any]:
+    node = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
+    if not node:
+        raise InvalidStateError(state_id)
+
+    all_descendants = set()
+    stack = [state_id]
+    while stack:
+        nid = stack.pop()
+        children = conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (nid,)).fetchall()
+        for c in children:
+            tid = c["target_id"]
+            if tid not in all_descendants:
+                all_descendants.add(tid)
+                stack.append(tid)
+
+    affected = [state_id] + list(all_descendants)
+    now = _now()
+    for nid in affected:
+        conn.execute("UPDATE nodes SET status = 'superseded', updated_at = ? WHERE id = ?", (now, nid))
+        mark_dirty(nid, conn)
+
+    project = node["project"]
+    _record_event(conn, state_id, project, "abandoned", {
+        "action": "abandoned",
+        "state_id": state_id,
+        "states_affected": len(affected),
+    }, session_id)
+    _invalidate_graph_cache()
+
+    return {"ok": True, "state_id": state_id, "states_affected": len(affected)}

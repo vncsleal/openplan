@@ -13,6 +13,24 @@ from openplan.core.planner import plan
 from openplan.core.telemetry import get_telemetry
 
 
+def _get_project_goal(project: str, conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT goal FROM nodes WHERE project = ? AND goal != '' ORDER BY created_at ASC LIMIT 1",
+        (project,),
+    ).fetchone()
+    return row["goal"] if row else ""
+
+
+def _find_goal_aligned_states(goal: str, project: str, conn: sqlite3.Connection, conn_sqlite: sqlite3.Connection) -> list[dict]:
+    like = f"%{goal}%"
+    rows = conn.execute(
+        "SELECT id, label, activation, status FROM nodes WHERE project = ? AND (label LIKE ? OR props LIKE ?) AND status NOT IN ('done', 'superseded') ORDER BY activation DESC LIMIT 10",
+        (project, like, like),
+    ).fetchall()
+    results = [dict(r) for r in rows]
+    return results
+
+
 def recommend(
     project: str,
     conn: sqlite3.Connection,
@@ -57,15 +75,64 @@ def recommend(
     if not cursor:
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
 
+    health = _graph_health(project, conn)
+    calibration_rate = health["calibration_count"] / health["edge_count"] if health["edge_count"] > 0 else 0.0
+    done_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'",
+        (project,),
+    ).fetchone()["cnt"]
+    remaining = health["state_count"] - done_count
+    state_of_project = {
+        "total_states": health["state_count"],
+        "edge_count": health["edge_count"],
+        "max_depth": health["max_depth"],
+        "orphan_count": health["orphan_count"],
+        "completed": done_count,
+        "remaining": remaining,
+        "calibration_rate": round(calibration_rate, 4),
+    }
+
+    effective_goal = goal or _get_project_goal(project, conn)
+
+    if effective_goal:
+        goal_aligned = _find_goal_aligned_states(effective_goal, project, conn, conn)
+        if goal_aligned:
+            candidates = []
+            for gs in goal_aligned:
+                try:
+                    plan_result = plan(
+                        cursor, gs["id"], conn, config,
+                        constraints={"max_cost": max_cost} if max_cost else None,
+                    )
+                    cost = plan_result.get("expected_cost", {}).get("tokens", 0)
+                    candidates.append((cost, gs, plan_result))
+                except (NoPathError, Exception):
+                    continue
+            if candidates:
+                candidates.sort(key=lambda x: x[0])
+                cost, best_state, best_plan = candidates[0]
+                return {
+                    "target": best_state["id"],
+                    "target_label": best_state["label"],
+                    "reason": "goal-oriented",
+                    "explanation": f"Cheapest path to goal '{effective_goal}' via {best_state['label']}",
+                    "path": best_plan.get("traversal", []),
+                    "cost": cost,
+                    "plan": {
+                        "path": best_plan.get("path", []),
+                        "expected_cost": best_plan.get("expected_cost", {}),
+                        "traversal": best_plan.get("traversal", []),
+                    },
+                    "state_of_project": state_of_project,
+                }
+
     node_rows = conn.execute(
         "SELECT id, label, activation, props FROM nodes WHERE project = ? AND id != ? AND status NOT IN ('done', 'superseded')",
         (project, cursor),
     ).fetchall()
 
     if not node_rows:
-        total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
-        done_count = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'", (project,)).fetchone()["cnt"]
-        return {"target": None, "reason": "no other states to recommend", "suggested_action": {"tool": "act", "action": "implement", "target": "create first work item"}, "state_of_project": {"total_states": total, "completed": done_count, "remaining": total - done_count, "calibration_rate": 0.0}}
+        return {"target": None, "reason": "no other states to recommend", "suggested_action": {"tool": "act", "action": "implement", "target": "create first work item"}, "state_of_project": state_of_project}
 
     orphan_ids = {r["id"] for r in conn.execute(
         "SELECT id FROM nodes WHERE project = ? AND NOT EXISTS "
@@ -160,23 +227,6 @@ def recommend(
         except Exception:
             _log.exception("Plan failed for %s", nid)
             continue
-
-    health = _graph_health(project, conn)
-    calibration_rate = health["calibration_count"] / health["edge_count"] if health["edge_count"] > 0 else 0.0
-    done_count = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'",
-        (project,),
-    ).fetchone()["cnt"]
-    remaining = health["state_count"] - done_count
-    state_of_project = {
-        "total_states": health["state_count"],
-        "edge_count": health["edge_count"],
-        "max_depth": health["max_depth"],
-        "orphan_count": health["orphan_count"],
-        "completed": done_count,
-        "remaining": remaining,
-        "calibration_rate": round(calibration_rate, 4),
-    }
 
     if not best_target:
         return {"target": None, "reason": "no reachable target from cursor", "state_of_project": state_of_project}
