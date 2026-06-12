@@ -286,7 +286,7 @@ def _upsert_baseline(conn: sqlite3.Connection, project: str | None, project_type
         )
     else:
         conn.execute(
-            "INSERT INTO cost_baselines (project, project_type, action, cost_tokens, cost_risk, sample_count, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            "INSERT OR IGNORE INTO cost_baselines (project, project_type, action, cost_tokens, cost_risk, sample_count, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
             (project, project_type, action, cost_tokens, cost_risk, _now()),
         )
 
