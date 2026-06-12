@@ -51,7 +51,8 @@ def recommend(
                     "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (cursor,)
                 ).fetchone()
                 if not root_has_edges:
-                    return {"target": None, "reason": "project has one state with no outgoing edges", "suggested_action": {"tool": "act", "action": "implement", "target": cursor}, "state_of_project": {"total_states": 1, "completed": 0, "remaining": 1, "calibration_rate": 0.0}}
+                    total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
+                    return {"target": None, "reason": "project has one state with no outgoing edges", "suggested_action": {"tool": "act", "action": "implement", "target": cursor}, "state_of_project": {"total_states": total, "completed": 0, "remaining": total, "calibration_rate": 0.0}}
 
     if not cursor:
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
@@ -62,7 +63,9 @@ def recommend(
     ).fetchall()
 
     if not node_rows:
-        return {"target": None, "reason": "no other states to recommend", "suggested_action": {"tool": "act", "action": "implement", "target": "create first work item"}, "state_of_project": {"total_states": 1, "completed": 0, "remaining": 1, "calibration_rate": 0.0}}
+        total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
+        done_count = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'", (project,)).fetchone()["cnt"]
+        return {"target": None, "reason": "no other states to recommend", "suggested_action": {"tool": "act", "action": "implement", "target": "create first work item"}, "state_of_project": {"total_states": total, "completed": done_count, "remaining": total - done_count, "calibration_rate": 0.0}}
 
     orphan_ids = {r["id"] for r in conn.execute(
         "SELECT id FROM nodes WHERE project = ? AND NOT EXISTS "
