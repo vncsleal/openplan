@@ -139,10 +139,11 @@ def test_reconstruct_basic(conn: sqlite3.Connection) -> None:
     result = reconstruct("p1", conn)
     assert result["ok"] is True
     assert result["project"] == "p1"
-    assert len(result["states"]) == 2
-    assert len(result["edges"]) == 1
-    assert result["statistics"]["total_states"] == 2
-    assert result["statistics"]["total_edges"] == 1
+    assert result["root"]["id"] == a
+    assert result["root"]["label"] == "root"
+    assert len(result["recent_path"]) == 0
+    assert result["project_health"]["total_states"] == 2
+    assert result["project_health"]["edge_count"] == 1
 
 
 def test_reconstruct_status_counts(conn: sqlite3.Connection) -> None:
@@ -153,22 +154,75 @@ def test_reconstruct_status_counts(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE nodes SET status = 'done' WHERE id = ?", (c,))
 
     result = reconstruct("p1", conn)
-    assert result["statistics"]["status_counts"]["pending"] == 1
-    assert result["statistics"]["status_counts"]["done"] == 2
+    assert result["project_health"]["total_states"] == 3
+    assert result["project_health"]["completed"] == 2
+    assert result["project_health"]["pct_complete"] == 66.7
 
 
 def test_reconstruct_empty_project(conn: sqlite3.Connection) -> None:
     result = reconstruct("empty", conn)
     assert result["ok"] is True
-    assert result["states"] == []
-    assert result["statistics"]["total_states"] == 0
+    assert result["root"] is None
+    assert result["frontier"] == []
+    assert result["project_health"]["total_states"] == 0
 
 
-def test_reconstruct_with_reasoning(conn: sqlite3.Connection) -> None:
-    props = json.dumps({"type": "decision", "question": "reconstruct?", "visit_count": 1})
-    sid = _make_node(conn, project="p1", props=props)
+def test_reconstruct_with_recent_path(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="start")
+    b = _make_node(conn, project="p1", label="middle")
+    c = _make_node(conn, project="p1", label="end")
+    _edge(conn, a, b, "implement")
+    _edge(conn, b, c, "research")
+    conn.execute(
+        "INSERT INTO events (id, project, node_id, event_type, payload, version) VALUES (?, ?, ?, 'acted', ?, 1)",
+        ("E-0001", "p1", a, json.dumps({"action": "implement", "source": a, "target": b})),
+    )
+    conn.execute(
+        "INSERT INTO events (id, project, node_id, event_type, payload, version) VALUES (?, ?, ?, 'acted', ?, 1)",
+        ("E-0002", "p1", b, json.dumps({"action": "research", "source": b, "target": c})),
+    )
+
     result = reconstruct("p1", conn)
-    state = result["states"][0]
-    assert state["reasoning"]["type"] == "decision"
-    assert state["reasoning"]["question"] == "reconstruct?"
-    assert state["raw_props"]["visit_count"] == 1
+    assert len(result["recent_path"]) == 2
+    assert result["recent_path"][0]["action"] == "implement"
+    assert result["recent_path"][0]["to"] == b
+    assert result["recent_path"][1]["action"] == "research"
+    assert result["recent_path"][1]["to"] == c
+
+
+def test_reconstruct_frontier(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    b = _make_node(conn, project="p1", label="pending task")
+    c = _make_node(conn, project="p1", label="done task")
+    _edge(conn, a, b)
+    _edge(conn, a, c)
+    conn.execute("UPDATE nodes SET status = 'done', activation = 0.8 WHERE id = ?", (c,))
+    conn.execute("UPDATE nodes SET status = 'pending', activation = 0.6 WHERE id = ?", (b,))
+
+    result = reconstruct("p1", conn, config={"activation_threshold": 0.5})
+    assert len(result["frontier"]) == 1
+    assert result["frontier"][0]["id"] == b
+
+
+def test_reconstruct_blockers(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    b = _make_node(conn, project="p1", label="blocked item")
+    conn.execute("UPDATE nodes SET status = 'blocked' WHERE id = ?", (b,))
+
+    result = reconstruct("p1", conn)
+    assert len(result["blockers"]) == 1
+    assert result["blockers"][0]["id"] == b
+
+
+def test_reconstruct_next_target(conn: sqlite3.Connection) -> None:
+    a = _make_node(conn, project="p1", label="root")
+    b = _make_node(conn, project="p1", label="do this next")
+    c = _make_node(conn, project="p1", label="skip this")
+    _edge(conn, a, b)
+    _edge(conn, a, c)
+    conn.execute("UPDATE nodes SET status = 'done', activation = 0.9 WHERE id = ?", (c,))
+    conn.execute("UPDATE nodes SET status = 'pending', activation = 0.7 WHERE id = ?", (b,))
+
+    result = reconstruct("p1", conn, cursor=a)
+    assert result["next_target"]["id"] == b
+    assert result["next_target"]["label"] == "do this next"

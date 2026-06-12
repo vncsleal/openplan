@@ -162,8 +162,8 @@ _TOOLS: list[MCPTool] = [
     ),
     t(
         "reconstruct",
-        "Reconstruct State Tree",
-        "Returns the full state tree (all states + edges) with reasoning payloads for a project. Use this to rebuild the entire mental model from scratch when context is lost or after a session handoff.",
+        "Reconstruct Project Context",
+        "Returns a synthesized view of the project: where you are (cursor), how you got here (recent_path), what needs attention (frontier, blockers), what you learned (open_insights), and what to do next (next_target). Call this to rebuild your full mental model from scratch — no need to call recommend/search/plan separately.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
         },
@@ -173,11 +173,16 @@ _TOOLS: list[MCPTool] = [
             "properties": {
                 "ok": {"type": "boolean"},
                 "project": {"type": "string"},
-                "states": {"type": "array"},
-                "edges": {"type": "array"},
-                "statistics": {"type": "object"},
+                "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "root": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                "recent_path": {"type": "array"},
+                "frontier": {"type": "array"},
+                "blockers": {"type": "array"},
+                "open_insights": {"type": "array"},
+                "next_target": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                "project_health": {"type": "object"},
             },
-            "required": ["ok", "project", "states"],
+            "required": ["ok", "project", "cursor", "project_health"],
         },
     ),
 ]

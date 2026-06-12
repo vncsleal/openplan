@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from openplan.core.errors import InvalidStateError, InvalidStatusError
-from openplan.core.graph import _graph_health
+from openplan.core.graph import _get_frontier_states, _graph_health
 from openplan.core.reasoning import REASONING_FIELDS, STATUS_VALUES, ReasoningPayload
 from openplan.core.state import _now, _record_event
 
@@ -94,58 +94,122 @@ def update_state(
     }
 
 
-def reconstruct(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
-    nodes = [dict(r) for r in conn.execute(
-        "SELECT * FROM nodes WHERE project = ? ORDER BY created_at ASC",
+def reconstruct(
+    project: str,
+    conn: sqlite3.Connection,
+    cursor: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = config or {}
+
+    root = conn.execute(
+        "SELECT id, label FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        (project,),
+    ).fetchone()
+
+    act_events = [dict(r) for r in conn.execute(
+        "SELECT payload, created_at FROM events WHERE project = ? AND event_type = 'acted' ORDER BY created_at DESC LIMIT 10",
         (project,),
     ).fetchall()]
 
-    states = []
-    for n in nodes:
-        props = json.loads(n["props"]) if isinstance(n["props"], str) else n["props"]
-        reasoning = ReasoningPayload.from_props(props)
-        states.append({
-            "id": n["id"],
-            "label": n["label"],
-            "status": n.get("status", "pending"),
-            "activation": round(n["activation"], 4),
-            "frontier": bool(n["frontier"]),
-            "reasoning": reasoning.to_dict(),
-            "raw_props": {k: v for k, v in props.items() if k not in REASONING_FIELDS},
-            "created_at": n["created_at"],
-            "updated_at": n["updated_at"],
-        })
+    recent_path = []
+    for evt in reversed(act_events):
+        try:
+            payload = json.loads(evt["payload"]) if isinstance(evt["payload"], str) else evt["payload"]
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if "source" in payload and "target" in payload and "action" in payload:
+            src_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (payload["source"],)).fetchone()
+            tgt_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (payload["target"],)).fetchone()
+            recent_path.append({
+                "from": payload["source"],
+                "from_label": src_label["label"] if src_label else "",
+                "action": payload["action"],
+                "to": payload["target"],
+                "to_label": tgt_label["label"] if tgt_label else "",
+                "evidence": payload.get("evidence"),
+            })
 
-    edges = [dict(r) for r in conn.execute(
-        "SELECT e.*, src.label AS source_label, tgt.label AS target_label "
-        "FROM edges e "
-        "JOIN nodes src ON src.id = e.source_id "
-        "JOIN nodes tgt ON tgt.id = e.target_id "
-        "WHERE src.project = ?",
+    threshold = config.get("activation_threshold", 0.5)
+    frontier_rows = conn.execute(
+        "SELECT id, label, status, activation FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress') AND activation > ? ORDER BY activation DESC",
+        (project, threshold),
+    ).fetchall()
+    frontier = [dict(r) for r in frontier_rows]
+
+    blocker_rows = conn.execute(
+        "SELECT id, label, activation FROM nodes WHERE project = ? AND status = 'blocked' ORDER BY activation DESC",
         (project,),
+    ).fetchall()
+    blockers = [dict(r) for r in blocker_rows]
+
+    open_insights = []
+    for r in conn.execute(
+        "SELECT e.weight_history, n.project FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ? ORDER BY e.updated_at DESC LIMIT 50",
+        (project,),
+    ).fetchall():
+        try:
+            wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
+            for entry in wh:
+                text = entry.get("insight", "")
+                if text:
+                    open_insights.append({"text": text, "applied": False})
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    all_nodes = [dict(r) for r in conn.execute(
+        "SELECT * FROM nodes WHERE project = ?", (project,),
     ).fetchall()]
 
     status_counts: dict[str, int] = defaultdict(int)
     type_counts: dict[str, int] = defaultdict(int)
-    for n in nodes:
+    for n in all_nodes:
         status_counts[n.get("status", "pending")] += 1
         props = json.loads(n["props"]) if isinstance(n["props"], str) else n["props"]
         t = props.get("type", "unknown")
         type_counts[t] += 1
 
     health = _graph_health(project, conn)
+    total = len(all_nodes)
+    done_count = status_counts.get("done", 0)
+    pct_complete = round(done_count / total * 100, 1) if total > 0 else 0.0
+
+    stale_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'pending' AND "
+        "datetime(updated_at) < datetime('now', '-7 days')",
+        (project,),
+    ).fetchone()["cnt"]
+
+    next_target = None
+    if not cursor:
+        cursor = root["id"] if root else None
+    if cursor:
+        pending_rows = conn.execute(
+            "SELECT id, label, activation FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress') AND id != ? ORDER BY activation DESC LIMIT 5",
+            (project, cursor),
+        ).fetchall()
+        if pending_rows:
+            best = pending_rows[0]
+            next_target = {"id": best["id"], "label": best["label"], "activation": round(best["activation"], 4)}
 
     return {
         "ok": True,
         "project": project,
-        "states": states,
-        "edges": edges,
-        "statistics": {
-            "total_states": len(states),
-            "total_edges": len(edges),
-            "status_counts": dict(status_counts),
-            "type_counts": dict(type_counts),
+        "cursor": cursor,
+        "root": {"id": root["id"], "label": root["label"]} if root else None,
+        "recent_path": recent_path,
+        "frontier": frontier,
+        "blockers": blockers,
+        "open_insights": open_insights[:10],
+        "next_target": next_target,
+        "project_health": {
+            "pct_complete": pct_complete,
+            "total_states": total,
+            "completed": done_count,
+            "calibrated_count": health["calibration_count"],
+            "stale_count": stale_count,
             "orphan_count": health["orphan_count"],
+            "edge_count": health["edge_count"],
             "max_depth": health["max_depth"],
             "calibration_rate": round(
                 health["calibration_count"] / health["edge_count"], 4

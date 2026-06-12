@@ -318,8 +318,10 @@ async def _handle_update_state(args: dict) -> CallToolResult:
 async def _handle_reconstruct(args: dict) -> CallToolResult:
     _read_lock_acquire()
     try:
-        result = _reconstruct(args["project"], _get_conn())
-        return ok(result)
+        project = args["project"]
+        cursor = _get_cursor(project)
+        result = _reconstruct(project, _get_conn(), cursor=cursor, config=_config)
+        return ok(result, project=project)
     finally:
         _read_lock_release()
 
