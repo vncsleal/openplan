@@ -61,12 +61,12 @@ def _record_event(conn: sqlite3.Connection, node_id: str, project: str, event_ty
     return eid
 
 
-def _ensure_node(project: str, label: str, conn: sqlite3.Connection) -> str:
+def _ensure_node(project: str, label: str, conn: sqlite3.Connection, parent_id: str | None = None) -> str:
     sid = generate_id(project, conn)
     now = _now()
     conn.execute(
-        "INSERT INTO nodes (id, label, project, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (sid, label, project, now, now),
+        "INSERT INTO nodes (id, label, project, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (sid, label, project, parent_id, now, now),
     )
     return sid
 
@@ -265,7 +265,7 @@ def act(
         if target:
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
             if not tgt:
-                target_id = _ensure_node(src["project"], target, conn)
+                target_id = _ensure_node(src["project"], target, conn, parent_id=state_id if state_id != src["id"] else None)
             conn.execute(
                 "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
                 (state_id, target_id, action, _now(), _now()),
