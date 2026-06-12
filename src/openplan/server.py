@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import uuid
 from typing import Any
 
 _log = logging.getLogger("openplan")
@@ -13,7 +14,12 @@ _log = logging.getLogger("openplan")
 from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import CallToolResult, ReadResourceResult, Resource, ServerCapabilities, TextContent, TextResourceContents, ToolsCapability, ResourcesCapability
+from mcp.types import (
+    CallToolResult, ListResourcesResult, ReadResourceResult, Resource,
+    ResourceUpdatedNotification, ResourceUpdatedNotificationParams,
+    ServerCapabilities, ServerNotification, TextContent, TextResourceContents,
+    ToolsCapability, ResourcesCapability,
+)
 
 from openplan.config import load_config
 from openplan.core.analytics import compute_analytics
@@ -30,6 +36,8 @@ from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.tools.definitions import get_tools
 
+from pydantic import AnyUrl
+
 _config: dict[str, Any] = {}
 _conn: Any = None
 _write_lock = threading.Lock()
@@ -40,7 +48,8 @@ _notification_seen: set[str] = set()
 _telemetry = get_telemetry()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
 if not _SESSION_ID:
-    _log.warning("OPENCODE_SESSION_ID not set — session tracking disabled")
+    _log.info("OPENCODE_SESSION_ID not set — will generate persistent session ID from DB")
+_RESOURCE_PAGE_SIZE = 20
 app = Server("openplan")
 
 
@@ -72,6 +81,16 @@ def _write_lock_acquire() -> None:
 
 def _write_lock_release() -> None:
     _write_lock.release()
+
+
+def _resolve_session_id(conn: Any) -> str:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'session_id'").fetchone()
+    if row:
+        return row["value"]
+    sid = str(uuid.uuid4())
+    conn.execute("INSERT INTO meta (key, value) VALUES ('session_id', ?)", (sid,))
+    conn.commit()
+    return sid
 
 
 def _get_cursor(project: str) -> str | None:
@@ -138,8 +157,20 @@ def _j(o: Any) -> str:
     return o.hex() if isinstance(o, bytes) else str(o)
 
 
-def _push_resource_notification(project: str) -> None:
-    _notification_queue.append({"type": "resource_updated", "uri": f"openplan://{project}/graph"})
+async def _push_resource_notification(project: str) -> None:
+    try:
+        session = app.request_context.session
+        await session.send_notification(
+            ServerNotification(
+                ResourceUpdatedNotification(
+                    params=ResourceUpdatedNotificationParams(
+                        uri=AnyUrl(f"openplan://{project}/graph")
+                    )
+                )
+            )
+        )
+    except Exception:
+        _log.warning("Failed to send resource update notification for %s", project)
 
 
 async def _handle_init(args: dict) -> CallToolResult:
@@ -149,7 +180,7 @@ async def _handle_init(args: dict) -> CallToolResult:
         result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
         if result.get("state_id"):
             _set_cursor(project, result["state_id"])
-            _push_resource_notification(project)
+            await _push_resource_notification(project)
         return ok(result, project=project)
     finally:
         _write_lock_release()
@@ -177,7 +208,7 @@ async def _handle_act(args: dict) -> CallToolResult:
         result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
         if result.get("next_state"):
             _set_cursor(project, result["next_state"])
-            _push_resource_notification(project)
+            await _push_resource_notification(project)
         return ok(result, project=project)
     finally:
         _write_lock_release()
@@ -241,14 +272,28 @@ async def list_tools() -> list:
 
 
 @app.list_resources()
-async def list_resources() -> list[Resource]:
+async def list_resources(req: Any = None) -> ListResourcesResult:
     conn = _get_conn()
-    resources = [Resource(uri="openplan://projects", name="All Projects", description="All projects with state counts", mimeType="application/json")]
-    resources.append(Resource(uri="openplan://analytics", name="Analytics", description="Cross-project analytics and anomaly detection", mimeType="application/json"))
-    for row in conn.execute("SELECT DISTINCT project FROM nodes").fetchall():
+    cursor = req.params.cursor if req and hasattr(req, "params") and req.params else None
+    resources: list[Resource] = [
+        Resource(uri="openplan://projects", name="All Projects", description="All projects with state counts", mimeType="application/json"),
+        Resource(uri="openplan://analytics", name="Analytics", description="Cross-project analytics and anomaly detection", mimeType="application/json"),
+    ]
+    if cursor:
+        project_rows = conn.execute(
+            "SELECT DISTINCT project FROM nodes WHERE project > ? ORDER BY project LIMIT ?",
+            (cursor, _RESOURCE_PAGE_SIZE),
+        ).fetchall()
+    else:
+        project_rows = conn.execute(
+            "SELECT DISTINCT project FROM nodes ORDER BY project LIMIT ?",
+            (_RESOURCE_PAGE_SIZE,),
+        ).fetchall()
+    for row in project_rows:
         p = row["project"]
         resources.append(Resource(uri=f"openplan://{p}/graph", name=f"{p} Graph", description=f"Full graph for {p}", mimeType="application/json"))
-    return resources
+    next_cursor = project_rows[-1]["project"] if len(project_rows) == _RESOURCE_PAGE_SIZE else None
+    return ListResourcesResult(resources=resources, nextCursor=next_cursor)
 
 
 @app.read_resource()
@@ -275,17 +320,18 @@ def _shutdown() -> None:
 
 
 async def main() -> None:
-    global _config, _conn
+    global _config, _conn, _SESSION_ID
     _config = load_config()
     _conn = get_connection(_config.get("db_path", "openplan.db"))
     init_db(_conn)
+    if not _SESSION_ID:
+        _SESSION_ID = _resolve_session_id(_conn)
     _telemetry.set_conn(_conn)
     _telemetry.reload_from_events()
     atexit.register(_shutdown)
 
     notifs = _maintenance_cycle(_conn, _config, _write_lock)
     _notification_queue.extend(notifs)
-
     _propagate(_conn, _config)
 
     maintenance_thread = threading.Thread(
@@ -318,7 +364,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.2.0",
+                server_version="0.2.1",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )

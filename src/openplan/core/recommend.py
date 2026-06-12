@@ -76,9 +76,15 @@ def recommend(
     threshold = config.get("activation_threshold", 0.5)
     telemetry = get_telemetry()
     conversion = telemetry.get_global_conversion_rate()
+
+    stored = conn.execute("SELECT value FROM meta WHERE key = 'recommend_weights'").fetchone()
+    if stored:
+        try:
+            config["recommend_weights"] = json.loads(stored["value"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    rw = dict(config.get("recommend_weights", {"orphan": 0.35, "visit": 0.30, "activation": 0.20, "stale": 0.15}))
     if conversion is not None and config.get("adaptive_weights", True):
-        rw = config.get("recommend_weights", {"orphan": 0.35, "visit": 0.30, "activation": 0.20, "stale": 0.15})
-        rw = dict(rw)
         if conversion < 0.3:
             rw["orphan"] = min(0.50, rw.get("orphan", 0.35) + 0.10)
             rw["activation"] = max(0.10, rw.get("activation", 0.20) - 0.05)
@@ -86,6 +92,10 @@ def recommend(
             rw["activation"] = min(0.35, rw.get("activation", 0.20) + 0.10)
             rw["orphan"] = max(0.15, rw.get("orphan", 0.35) - 0.05)
         config["recommend_weights"] = rw
+        try:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('recommend_weights', ?)", (json.dumps(rw),))
+        except Exception:
+            pass
 
     scored = []
     for r in node_rows:
