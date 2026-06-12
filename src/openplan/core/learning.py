@@ -108,8 +108,10 @@ def tune(conn: sqlite3.Connection, config: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             continue
         if payload.get("action") and payload.get("target"):
-            actual = payload.get("cost_actual", {}).get("tokens", 0)
-            expected = payload.get("expected_cost", {}).get("tokens")
+            actual_cost_val = payload.get("cost_actual") or {}
+            actual = actual_cost_val.get("tokens", 0)
+            expected_cost_val = payload.get("expected_cost") or {}
+            expected = expected_cost_val.get("tokens")
             if expected and expected > 0 and actual > 0:
                 efficiency = expected / actual
                 if efficiency >= 1.2:
