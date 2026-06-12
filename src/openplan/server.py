@@ -15,7 +15,8 @@ from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    CallToolResult, ListResourcesResult, ReadResourceResult, Resource,
+    CallToolResult, GetPromptResult, ListResourcesResult, Prompt,
+    PromptMessage, PromptArgument, ReadResourceResult, Resource,
     ResourceUpdatedNotification, ResourceUpdatedNotificationParams,
     ServerCapabilities, ServerNotification, TextContent, TextResourceContents,
     ToolsCapability, ResourcesCapability,
@@ -310,6 +311,44 @@ async def read_resource(uri: str) -> ReadResourceResult:
         health = _graph_health(project, conn)
         return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(health), mimeType="application/json")])
     return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps({"error": "not found"}), mimeType="application/json")])
+
+
+@app.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    return [
+        Prompt(
+            name="agent_loop",
+            title="Agent Loop",
+            description="The recommended workflow for using OpenPlan: init → act → recommend → search",
+            arguments=[
+                PromptArgument(name="project", description="Project slug", required=False),
+            ],
+        ),
+    ]
+
+
+@app.get_prompt()
+async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetPromptResult:
+    project = arguments.get("project", "<project>") if arguments else "<project>"
+    return GetPromptResult(
+        messages=[
+            PromptMessage(
+                role="user",
+                content=TextContent(
+                    type="text",
+                    text=f"""You have access to OpenPlan, an MCP server with 4 tools:
+
+init(project, label) — Create a new project context (idempotent).
+act(project, action, target, parent?, evidence?, thought?, expected_cost?) — Traverse to a target or create one. Auto-calibrates. Use `parent` to create siblings.
+recommend(project?, goal?, max_cost?, cursor?) — Find the best next target with an A* plan. Omit project for cross-project.
+search(query?) — Find projects, states, and insights across everything. Omit query for full project index.
+
+Your current project is `{project}`.
+Start with init if it doesn't exist, then act to create work items, recommend to find what to do next, and search to find relevant knowledge.""",
+                ),
+            ),
+        ],
+    )
 
 
 def _shutdown() -> None:
