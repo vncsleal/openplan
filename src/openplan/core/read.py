@@ -105,7 +105,7 @@ def reconstruct(
     config = config or {}
 
     root = conn.execute(
-        "SELECT id, label FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, label, goal FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
         (project,),
     ).fetchone()
 

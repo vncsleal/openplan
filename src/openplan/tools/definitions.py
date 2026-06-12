@@ -180,7 +180,7 @@ _TOOLS: list[MCPTool] = [
                 "project": {"type": "string"},
                 "cursor": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "root": {"anyOf": [{"type": "object"}, {"type": "null"}]},
-                "goal": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                "goal": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                 "tree": {"type": "array"},
                 "recent_path": {"type": "array"},
                 "frontier": {"type": "array"},

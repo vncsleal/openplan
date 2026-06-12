@@ -284,19 +284,21 @@ def _compute_pagerank(project: str, conn: sqlite3.Connection, iterations: int = 
     return pr
 
 
-def _graph_health(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
+def _graph_health(project: str, conn: sqlite3.Connection, cursor: str | None = None) -> dict[str, Any]:
     state_count = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
     edge_count = conn.execute(
         "SELECT COUNT(*) AS cnt FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
         (project,),
     ).fetchone()["cnt"]
 
+    orphan_exclude = f"AND n.id != '{cursor}' " if cursor else ""
     orphans = [
         dict(r) for r in conn.execute(
-            "SELECT n.id, n.label, n.activation FROM nodes n "
-            "WHERE n.project = ? AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id) "
-            "AND n.id != (SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?) "
-            "ORDER BY n.activation DESC LIMIT 50",
+            f"SELECT n.id, n.label, n.activation FROM nodes n "
+            f"WHERE n.project = ? AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id) "
+            f"AND n.id != (SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?) "
+            f"{orphan_exclude}"
+            f"ORDER BY n.activation DESC LIMIT 50",
             (project, project),
         ).fetchall()
     ]

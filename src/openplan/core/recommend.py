@@ -75,7 +75,7 @@ def recommend(
     if not cursor:
         return {"target": None, "reason": "project is empty", "state_of_project": {"total_states": 0, "completed": 0, "remaining": 0, "calibration_rate": 0.0}}
 
-    health = _graph_health(project, conn)
+    health = _graph_health(project, conn, cursor=cursor)
     calibration_rate = health["calibration_count"] / health["edge_count"] if health["edge_count"] > 0 else 0.0
     done_count = conn.execute(
         "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'",
@@ -93,6 +93,7 @@ def recommend(
     }
 
     effective_goal = goal or _get_project_goal(project, conn)
+    goal_aware = bool(effective_goal)
 
     if effective_goal:
         goal_aligned = _find_goal_aligned_states(effective_goal, project, conn, conn)
@@ -125,6 +126,10 @@ def recommend(
                     },
                     "state_of_project": state_of_project,
                 }
+        if effective_goal:
+            goal_aware = True
+        else:
+            goal_aware = False
 
     node_rows = conn.execute(
         "SELECT id, label, activation, props FROM nodes WHERE project = ? AND id != ? AND status NOT IN ('done', 'superseded')",
@@ -137,8 +142,9 @@ def recommend(
     orphan_ids = {r["id"] for r in conn.execute(
         "SELECT id FROM nodes WHERE project = ? AND NOT EXISTS "
         "(SELECT 1 FROM edges WHERE source_id = nodes.id) AND id != "
-        "(SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?)",
-        (project, project),
+        "(SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?) "
+        "AND id != ?",
+        (project, project, cursor),
     ).fetchall()}
 
     max_visits = conn.execute(
@@ -170,6 +176,18 @@ def recommend(
         except Exception:
             _log.exception("Failed to save recommend weights")
 
+    depth_map: dict[str, int] = {}
+    max_depth = 0
+    if goal_aware:
+        for r in conn.execute(
+            "SELECT n.id, COUNT(e.source_id) AS depth FROM nodes n "
+            "LEFT JOIN edges e ON e.target_id = n.id "
+            "WHERE n.project = ? GROUP BY n.id",
+            (project,),
+        ).fetchall():
+            depth_map[r["id"]] = r["depth"]
+        max_depth = max(depth_map.values()) if depth_map else 0
+
     scored = []
     for r in node_rows:
         nid, label, activation = r["id"], r["label"], r["activation"]
@@ -178,8 +196,11 @@ def recommend(
         except (json.JSONDecodeError, TypeError):
             props = {}
         orphan = nid in orphan_ids
-        score = _score_state(nid, activation, props, orphan, max_visits, threshold, config)
-        scored.append((score, nid, label, activation, orphan))
+        base_score = _score_state(nid, activation, props, orphan, max_visits, threshold, config)
+        if goal_aware and max_depth > 0:
+            depth_bonus = 0.2 * (depth_map.get(nid, 0) / max_depth)
+            base_score += depth_bonus
+        scored.append((base_score, nid, label, activation, orphan))
 
     scored.sort(key=lambda x: -x[0])
 
