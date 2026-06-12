@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 from openplan.core.errors import InvalidStateError, InvalidStatusError
@@ -112,6 +113,26 @@ def reconstruct(
         (project,),
     ).fetchall()]
 
+    all_ids: set[str] = set()
+    for evt in act_events:
+        try:
+            p = json.loads(evt["payload"]) if isinstance(evt["payload"], str) else evt["payload"]
+            if "source" in p:
+                all_ids.add(p["source"])
+            if "target" in p:
+                all_ids.add(p["target"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    label_map: dict[str, str] = {}
+    if all_ids:
+        placeholders = ",".join("?" * len(all_ids))
+        for r in conn.execute(
+            f"SELECT id, label FROM nodes WHERE id IN ({placeholders})",
+            tuple(all_ids),
+        ).fetchall():
+            label_map[r["id"]] = r["label"]
+
     recent_path = []
     for evt in reversed(act_events):
         try:
@@ -119,33 +140,100 @@ def reconstruct(
         except (json.JSONDecodeError, TypeError):
             continue
         if "source" in payload and "target" in payload and "action" in payload:
-            src_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (payload["source"],)).fetchone()
-            tgt_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (payload["target"],)).fetchone()
             recent_path.append({
                 "from": payload["source"],
-                "from_label": src_label["label"] if src_label else "",
+                "from_label": label_map.get(payload["source"], ""),
                 "action": payload["action"],
                 "to": payload["target"],
-                "to_label": tgt_label["label"] if tgt_label else "",
+                "to_label": label_map.get(payload["target"], ""),
                 "evidence": payload.get("evidence"),
             })
 
-    threshold = config.get("activation_threshold", 0.5)
-    frontier_rows = conn.execute(
-        "SELECT id, label, status, activation FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress') AND activation > ? ORDER BY activation DESC",
-        (project, threshold),
-    ).fetchall()
-    frontier = [dict(r) for r in frontier_rows]
-
-    blocker_rows = conn.execute(
-        "SELECT id, label, activation FROM nodes WHERE project = ? AND status = 'blocked' ORDER BY activation DESC",
+    all_nodes = [dict(r) for r in conn.execute(
+        "SELECT id, label, status, activation, props, updated_at, created_at FROM nodes WHERE project = ?",
         (project,),
-    ).fetchall()
-    blockers = [dict(r) for r in blocker_rows]
+    ).fetchall()]
+
+    threshold = config.get("activation_threshold", 0.5)
+    frontier: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = defaultdict(int)
+    type_counts: dict[str, int] = defaultdict(int)
+    stale_cutoff = 7
+    stale_count = 0
+
+    for n in all_nodes:
+        st = n.get("status", "pending")
+        status_counts[st] += 1
+        props = json.loads(n["props"]) if isinstance(n["props"], str) else n["props"]
+        type_counts[props.get("type", "unknown")] += 1
+        act = n["activation"]
+        if st in ("pending", "in_progress") and act > threshold:
+            frontier.append({"id": n["id"], "label": n["label"], "status": st, "activation": act})
+        if st == "blocked":
+            blockers.append({"id": n["id"], "label": n["label"], "activation": act})
+        if st == "pending":
+            try:
+                updated = datetime.fromisoformat(n["updated_at"].replace("Z", "+00:00"))
+                if (datetime.now(timezone.utc) - updated).days >= stale_cutoff:
+                    stale_count += 1
+            except (ValueError, TypeError):
+                pass
+
+    edge_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
+        (project,),
+    ).fetchone()["cnt"]
+
+    calibration_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM edges e JOIN nodes n ON n.id = e.source_id "
+        "WHERE n.project = ? AND e.weight_history IS NOT NULL AND e.weight_history != '[]'",
+        (project,),
+    ).fetchone()["cnt"]
+
+    orphan_count = len([n for n in all_nodes if not conn.execute(
+        "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (n["id"],)
+    ).fetchone() and n["id"] != (root["id"] if root else None)])
+
+    max_depth = 0
+    if root:
+        raw_edges = conn.execute(
+            "SELECT source_id, target_id FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ?",
+            (project,),
+        ).fetchall()
+        adj: dict[str, list[str]] = {}
+        for r in raw_edges:
+            adj.setdefault(r["source_id"], []).append(r["target_id"])
+            adj.setdefault(r["target_id"], [])
+        visited: dict[str, int] = {root["id"]: 0}
+        stack = [root["id"]]
+        while stack:
+            node = stack.pop()
+            for nb in adj.get(node, []):
+                if nb not in visited:
+                    visited[nb] = visited[node] + 1
+                    max_depth = max(max_depth, visited[nb])
+                    stack.append(nb)
+
+    total = len(all_nodes)
+    done_count = status_counts.get("done", 0)
+    pct_complete = round(done_count / total * 100, 1) if total > 0 else 0.0
+
+    next_target = None
+    if not cursor:
+        cursor = root["id"] if root else None
+    if cursor:
+        pending = sorted(
+            [n for n in all_nodes if n["id"] != cursor and n.get("status") in ("pending", "in_progress")],
+            key=lambda n: -n["activation"],
+        )[:5]
+        if pending:
+            best = pending[0]
+            next_target = {"id": best["id"], "label": best["label"], "activation": round(best["activation"], 4)}
 
     open_insights = []
     for r in conn.execute(
-        "SELECT e.weight_history, n.project FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ? ORDER BY e.updated_at DESC LIMIT 50",
+        "SELECT e.weight_history FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ? ORDER BY e.updated_at DESC LIMIT 50",
         (project,),
     ).fetchall():
         try:
@@ -156,41 +244,6 @@ def reconstruct(
                     open_insights.append({"text": text, "applied": False})
         except (json.JSONDecodeError, TypeError):
             pass
-
-    all_nodes = [dict(r) for r in conn.execute(
-        "SELECT * FROM nodes WHERE project = ?", (project,),
-    ).fetchall()]
-
-    status_counts: dict[str, int] = defaultdict(int)
-    type_counts: dict[str, int] = defaultdict(int)
-    for n in all_nodes:
-        status_counts[n.get("status", "pending")] += 1
-        props = json.loads(n["props"]) if isinstance(n["props"], str) else n["props"]
-        t = props.get("type", "unknown")
-        type_counts[t] += 1
-
-    health = _graph_health(project, conn)
-    total = len(all_nodes)
-    done_count = status_counts.get("done", 0)
-    pct_complete = round(done_count / total * 100, 1) if total > 0 else 0.0
-
-    stale_count = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'pending' AND "
-        "datetime(updated_at) < datetime('now', '-7 days')",
-        (project,),
-    ).fetchone()["cnt"]
-
-    next_target = None
-    if not cursor:
-        cursor = root["id"] if root else None
-    if cursor:
-        pending_rows = conn.execute(
-            "SELECT id, label, activation FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress') AND id != ? ORDER BY activation DESC LIMIT 5",
-            (project, cursor),
-        ).fetchall()
-        if pending_rows:
-            best = pending_rows[0]
-            next_target = {"id": best["id"], "label": best["label"], "activation": round(best["activation"], 4)}
 
     return {
         "ok": True,
@@ -206,13 +259,13 @@ def reconstruct(
             "pct_complete": pct_complete,
             "total_states": total,
             "completed": done_count,
-            "calibrated_count": health["calibration_count"],
+            "calibrated_count": calibration_count,
             "stale_count": stale_count,
-            "orphan_count": health["orphan_count"],
-            "edge_count": health["edge_count"],
-            "max_depth": health["max_depth"],
+            "orphan_count": orphan_count,
+            "edge_count": edge_count,
+            "max_depth": max_depth,
             "calibration_rate": round(
-                health["calibration_count"] / health["edge_count"], 4
-            ) if health["edge_count"] > 0 else 0.0,
+                calibration_count / edge_count, 4
+            ) if edge_count > 0 else 0.0,
         },
     }
