@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import json
+import math
 import re
 import sqlite3
 from typing import Any
@@ -21,15 +22,21 @@ def _actual_tokens(entry: dict) -> float:
     return entry["actual_cost"]["tokens"]
 
 
-def _get_predictive_cost(action: str, project_type: str, conn: sqlite3.Connection) -> float | None:
-    if not project_type:
-        return None
-    row = conn.execute(
-        "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines WHERE project_type = ? AND action = ?",
-        (project_type, action),
-    ).fetchone()
-    if row:
-        return row["cost_tokens"] * (1 + row["cost_risk"])
+def _get_predictive_cost(action: str, project: str, project_type: str, conn: sqlite3.Connection) -> float | None:
+    if project:
+        row = conn.execute(
+            "SELECT cost_tokens, cost_risk FROM cost_baselines WHERE project = ? AND action = ?",
+            (project, action),
+        ).fetchone()
+        if row:
+            return row["cost_tokens"] * (1 + row["cost_risk"])
+    if project_type:
+        row = conn.execute(
+            "SELECT cost_tokens, cost_risk FROM cost_baselines WHERE project IS NULL AND project_type = ? AND action = ?",
+            (project_type, action),
+        ).fetchone()
+        if row:
+            return row["cost_tokens"] * (1 + row["cost_risk"])
     return None
 
 
@@ -62,6 +69,15 @@ def _meets_preconditions(edge_data: dict[str, Any], conn: sqlite3.Connection, co
 
 def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any], conn: sqlite3.Connection | None = None) -> float:
     raw_cost = edge_data["cost_tokens"]
+    if conn is not None:
+        pred = _get_predictive_cost(
+            edge_data.get("action", ""),
+            edge_data.get("project", ""),
+            config.get("project_type", ""),
+            conn,
+        )
+        if pred is not None:
+            raw_cost = pred
     wh_raw = edge_data.get("weight_history") or "[]"
     try:
         weight_history = json.loads(wh_raw) if isinstance(wh_raw, str) else wh_raw
@@ -104,28 +120,29 @@ def plan(
             raise TargetNotFoundError(from_id, "resolve", target_id)
         resolved_state = target_id
     else:
-        try:
-            from openplan.core.embedding import get_cache, get_provider
-            if not get_provider().loaded:
-                raise TargetResolutionError("Embedding provider not available — use a state ID instead")
-            cache = get_cache()
-            results = cache.query(target_id, conn, top_k=1)
-            if results:
-                best = results[0]
-                resolved_state = best["id"]
-                resolved_info = best
-            else:
-                raise TargetResolutionError(f"Could not resolve '{target_id}' to any known state")
-        except TargetResolutionError:
-            raise
-        except Exception as exc:
-            raise TargetResolutionError(f"Failed to resolve target '{target_id}': {exc}") from exc
+        from openplan.core.resolve import resolve_target
+
+        project_row = conn.execute(
+            "SELECT project FROM nodes WHERE id = ?", (from_id,)
+        ).fetchone()
+        project = project_row["project"] if project_row else None
+        if not project:
+            raise TargetResolutionError("Could not determine project from source state")
+        results = resolve_target(target_id, project, conn, top_k=1)
+        if results:
+            best = results[0]
+            resolved_state = best["id"]
+            resolved_info = best
+        else:
+            raise TargetResolutionError(f"Could not resolve '{target_id}' to any known state")
 
     constraints = constraints or {}
     max_cost = constraints.get("max_cost")
     min_prob = constraints.get("min_prob")
     expansion_limit = constraints.get("expansion_limit", 500)
+    top_k = constraints.get("top_k", 1)
     avoid_states = set(constraints.get("avoid_states", []) or [])
+    risk_adjustment = constraints.get("risk_adjustment") or config.get("risk_adjustment", "probability")
 
     target_emb: np.ndarray | None = None
     avg_edge_cost = config.get("avg_edge_cost", 10000.0)
@@ -142,17 +159,90 @@ def plan(
     except Exception:
         pass
 
+    tuning_data: dict[str, dict] = {}
+    for r in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'tuning:%'"):
+        action = r["key"][7:]
+        try:
+            tuning_data[action] = json.loads(r["value"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    self_tune_overrides: dict[str, Any] = {}
+    st_row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'self_tuning:overrides'"
+    ).fetchone()
+    if st_row:
+        try:
+            self_tune_overrides = json.loads(st_row["value"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if src:
+        for r in conn.execute(
+            "SELECT id FROM nodes WHERE project = ? AND status IN ('blocked', 'cascade_blocked')",
+            (src["project"],),
+        ):
+            if r["id"] != resolved_state:
+                for sub in conn.execute(
+                    "SELECT target_id FROM edges WHERE source_id = ?", (r["id"],)
+                ):
+                    if sub["target_id"] != resolved_state:
+                        avoid_states.add(sub["target_id"])
+
+    resolved_label = ""
+    if resolved_state:
+        row = conn.execute("SELECT label FROM nodes WHERE id = ?", (resolved_state,)).fetchone()
+        if row:
+            resolved_label = row["label"] or ""
+    target_tokens = set(re.findall(r"[a-zA-Z0-9_]+", resolved_label.lower())) if resolved_label else set()
+
+    goal_text = ""
+    if src:
+        gr = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{src['project']}",)).fetchone()
+        if gr:
+            try:
+                gv = json.loads(gr["value"])
+                if isinstance(gv, dict):
+                    goal_text = gv.get("text", "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+    goal_tokens = set(re.findall(r"[a-zA-Z0-9_]+", goal_text.lower())) if goal_text else set()
+
+    heuristic_method = "none"
+
     def _heuristic(sid: str) -> float:
-        if target_emb is None or embedding_cache is None:
-            return 0.0
-        state_emb = embedding_cache.get_embedding(sid)
-        if state_emb is None:
-            return 0.0
-        denom = np.linalg.norm(state_emb) * np.linalg.norm(target_emb)
-        if denom == 0:
-            return 0.0
-        sim = float(np.dot(state_emb, target_emb) / denom)
-        return (1.0 - sim) * avg_edge_cost * _HEURISTIC_SCALE
+        nonlocal heuristic_method
+        if target_emb is not None and embedding_cache is not None:
+            state_emb = embedding_cache.get_embedding(sid)
+            if state_emb is not None:
+                denom = np.linalg.norm(state_emb) * np.linalg.norm(target_emb)
+                if denom != 0:
+                    sim = float(np.dot(state_emb, target_emb) / denom)
+                    heuristic_method = "embedding"
+                    return (1.0 - sim) * avg_edge_cost * _HEURISTIC_SCALE
+        sr = conn.execute("SELECT label FROM nodes WHERE id = ?", (sid,)).fetchone()
+        if sr and sr["label"]:
+            state_tokens = set(re.findall(r"[a-zA-Z0-9_]+", sr["label"].lower()))
+            overlap = target_tokens & state_tokens
+            if target_tokens:
+                sim = len(overlap) / len(target_tokens)
+                heuristic_method = "token"
+                return (1.0 - sim) * avg_edge_cost * _HEURISTIC_SCALE * 0.5
+        if goal_tokens and sr and sr["label"]:
+            state_tokens = set(re.findall(r"[a-zA-Z0-9_]+", sr["label"].lower()))
+            g_overlap = goal_tokens & state_tokens
+            if goal_tokens:
+                g_sim = len(g_overlap) / len(goal_tokens)
+                heuristic_method = "goal"
+                return (1.0 - g_sim) * avg_edge_cost * _HEURISTIC_SCALE * 0.3
+        heuristic_method = "zero"
+        return 0.0
+
+    def _adjusted_cost(prob: float, base_cost: float) -> float:
+        if risk_adjustment == "probability":
+            return base_cost / max(prob, 0.01)
+        elif risk_adjustment == "variance":
+            return base_cost * (1 + (1 - prob) ** 2)
+        return base_cost
 
     f_start = _heuristic(from_id)
     pq: list = [(f_start, from_id, [from_id], 1.0, [], 0.0)]
@@ -185,8 +275,21 @@ def plan(
             if not _meets_preconditions(e_data, conn, config):
                 continue
             edge_cost = _get_edge_cost(e_data, config, conn)
-            new_g = g + edge_cost
-            new_prob = cum_prob * e_data["prob"]
+            edge_prob = e_data["prob"]
+            action_name = e_data.get("action", "")
+            action_penalties = self_tune_overrides.get("action_penalties", {})
+            penalty = action_penalties.get(action_name, 1.0)
+            edge_cost *= penalty
+            if action_name in tuning_data:
+                td = tuning_data[e_data["action"]]
+                sr = td.get("success_rate", 0.5)
+                if sr < 0.3:
+                    edge_cost *= 1.5
+                elif sr > 0.8:
+                    edge_cost *= 0.8
+            adjusted_cost = _adjusted_cost(edge_prob, edge_cost)
+            new_g = g + adjusted_cost
+            new_prob = cum_prob * edge_prob
             if max_cost is not None and new_g > max_cost:
                 continue
             if min_prob is not None and new_prob < min_prob:
@@ -194,7 +297,33 @@ def plan(
             if neighbor not in visited or visited[neighbor] > new_g:
                 new_edge_infos = edge_infos + [
                     {"from": node, "action": e_data["action"], "to": neighbor,
-                     "prob": e_data["prob"], "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"]}
+                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"]}
+                ]
+                heapq.heappush(pq, (new_g + _heuristic(neighbor), neighbor, path + [neighbor], new_prob, new_edge_infos, new_g))
+
+        reverse_penalty = config.get("reverse_penalty", 1.0)
+        for e in conn.execute("SELECT * FROM edges WHERE target_id = ?", (node,)).fetchall():
+            e_data = dict(e)
+            neighbor = e_data["source_id"]
+            if neighbor in avoid_states:
+                continue
+            if not _meets_preconditions(e_data, conn, config):
+                continue
+            edge_cost = _get_edge_cost(e_data, config, conn) * reverse_penalty
+            edge_prob = e_data["prob"]
+            action_penalties = self_tune_overrides.get("action_penalties", {})
+            edge_cost *= action_penalties.get(e_data.get("action", ""), 1.0)
+            adjusted_cost = _adjusted_cost(edge_prob, edge_cost)
+            new_g = g + adjusted_cost
+            new_prob = cum_prob * edge_prob
+            if max_cost is not None and new_g > max_cost:
+                continue
+            if min_prob is not None and new_prob < min_prob:
+                continue
+            if neighbor not in visited or visited[neighbor] > new_g:
+                new_edge_infos = edge_infos + [
+                    {"from": node, "action": f"reverse({e_data['action']})", "to": neighbor, "direction": "reverse",
+                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"]}
                 ]
                 heapq.heappush(pq, (new_g + _heuristic(neighbor), neighbor, path + [neighbor], new_prob, new_edge_infos, new_g))
 
@@ -204,33 +333,56 @@ def plan(
         raise NoPathError()
 
     candidates.sort(key=lambda x: x[0])
-    top_paths: list[tuple[float, list[str], float, list[dict[str, Any]]]] = []
-    for g_cost, p_path, p_prob, p_edges in candidates:
-        if len(top_paths) >= 3:
-            break
-        too_similar = False
-        for _, _, _, existing_edges in top_paths:
-            shared = sum(1 for e in p_edges if e in existing_edges)
-            max_shared = max(len(p_edges), len(existing_edges))
-            if max_shared > 0 and (shared / max_shared) > 0.5:
-                too_similar = True
-                break
-        if not too_similar:
-            top_paths.append((g_cost, p_path, p_prob, p_edges))
+    top_k = max(1, min(top_k, 5))
+    top_paths = candidates[:top_k]
 
     cost, path, cum_prob, edge_infos = top_paths[0]
     has_low_prob = any(ei["prob"] < 0.5 for ei in edge_infos)
-    traversal = [{"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"]} for ei in edge_infos]
+    traversal = []
+    total_variance = 0.0
+    for ei in edge_infos:
+        entry = {"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"], "direction": ei.get("direction", "forward")}
+        action = ei.get("action", "").replace("reverse(", "").rstrip(")")
+        td = tuning_data.get(action, {})
+        if td.get("cost_variance") is not None:
+            entry["cost_variance"] = td["cost_variance"]
+            total_variance += td["cost_variance"]
+        if td.get("cost_stddev") is not None:
+            entry["cost_stddev"] = td["cost_stddev"]
+        if td.get("cost_ci_95") is not None:
+            entry["cost_ci_95"] = td["cost_ci_95"]
+        traversal.append(entry)
+
     total_tokens = sum(ei["cost_tokens"] for ei in edge_infos)
     max_risk = max(ei["cost_risk"] for ei in edge_infos) if edge_infos else 0.0
 
+    expected_cost: dict[str, Any] = {"tokens": total_tokens, "risk": max_risk, "prob": cum_prob, "steps": len(path) - 1}
+    if total_variance > 0:
+        expected_cost["cost_variance"] = round(total_variance, 1)
+        stddev = math.sqrt(total_variance)
+        expected_cost["cost_stddev"] = round(stddev, 1)
+        expected_cost["confidence_interval"] = [
+            round(max(0, total_tokens - 1.96 * stddev), 1),
+            round(total_tokens + 1.96 * stddev, 1),
+        ]
+
     result: dict[str, Any] = {
         "ok": True, "path": path,
-        "expected_cost": {"tokens": total_tokens, "risk": max_risk, "steps": len(path) - 1},
+        "expected_cost": expected_cost,
         "traversal": traversal, "truncated": truncated, "high_uncertainty": has_low_prob,
+        "heuristic_method": heuristic_method, "risk_adjustment": risk_adjustment,
     }
     if resolved_info:
         result["resolved_target"] = resolved_info
+    if len(top_paths) > 1:
+        result["alternatives"] = [
+            {
+                "path": p,
+                "expected_cost": {"tokens": sum(ei["cost_tokens"] for ei in es), "prob": pp, "steps": len(p) - 1},
+                "traversal": [{"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"]} for ei in es],
+            }
+            for gc, p, pp, es in top_paths[1:]
+        ]
     return result
 
 

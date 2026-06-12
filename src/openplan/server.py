@@ -26,12 +26,17 @@ from mcp.types import (
 from openplan.config import load_config
 from openplan.core.analytics import compute_analytics, self_diagnose as _self_diagnose
 from openplan.core.errors import OpenPlanError
+from openplan.core.export import compress as _compress
+from openplan.core.export import prune as _prune
 from openplan.core.graph import _graph_health, search as _search
 from openplan.core.insight_propagation import propagate as _propagate
+from openplan.core.simulate import simulate as _simulate
 from openplan.core.learning import tune as _tune
+from openplan.core.tree import build_tree as _tree
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.planner import plan as _plan
 from openplan.core.read import compare_paths as _compare_paths
+from openplan.core.read import compare_states as _compare_states
 from openplan.core.read import optimize as _optimize
 from openplan.core.read import read_state as _read_state
 from openplan.core.read import reconstruct as _reconstruct
@@ -109,9 +114,26 @@ def _resolve_session_id(conn: Any) -> str:
 def _get_cursor(project: str) -> str | None:
     if _conn is None:
         return None
-    row = _conn.execute("SELECT cursor_state_id FROM sessions WHERE session_id = ? AND project = ?", (_SESSION_ID, project)).fetchone()
+    if _SESSION_ID:
+        row = _conn.execute(
+            "SELECT cursor_state_id FROM sessions WHERE session_id = ? AND project = ?",
+            (_SESSION_ID, project),
+        ).fetchone()
+        if row:
+            return row["cursor_state_id"]
+    row = _conn.execute(
+        "SELECT cursor_state_id FROM sessions WHERE project = ? ORDER BY updated_at DESC LIMIT 1",
+        (project,),
+    ).fetchone()
     if row:
         return row["cursor_state_id"]
+    row = _conn.execute(
+        "SELECT json_extract(payload, '$.target') AS tgt FROM events "
+        "WHERE project = ? AND event_type = 'acted' ORDER BY created_at DESC LIMIT 1",
+        (project,),
+    ).fetchone()
+    if row and row["tgt"]:
+        return row["tgt"]
     return None
 
 
@@ -206,6 +228,7 @@ async def _handle_act(args: dict) -> CallToolResult:
     project = args["project"]
     _write_lock_acquire()
     need_notify = False
+    auto_tuned = False
     try:
         conn = _get_conn()
         source = _get_cursor(project)
@@ -222,14 +245,31 @@ async def _handle_act(args: dict) -> CallToolResult:
             if p_row["project"] != project:
                 return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
             source = parent
-        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID, postconditions=args.get("postconditions"))
+        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), actual_cost=args.get("actual_cost"), session_id=_SESSION_ID, postconditions=args.get("postconditions"))
         need_notify = bool(result.get("next_state"))
         if need_notify:
             _set_cursor(project, result["next_state"])
+        tune_interval = _config.get("tune_interval", 10)
+        if tune_interval > 0:
+            count_row = _conn.execute(
+                "SELECT value FROM meta WHERE key = 'self_tuning:act_count'"
+            ).fetchone()
+            count = json.loads(count_row["value"]) if count_row else 0
+            count += 1
+            if count >= tune_interval:
+                from openplan.core.learning import tune as _auto_tune
+                _auto_tune(conn, _config)
+                count = 0
+                auto_tuned = True
+            _conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('self_tuning:act_count', ?)",
+                (json.dumps(count),),
+            )
     finally:
         _write_lock_release()
     if need_notify:
         await _push_resource_notification(project)
+    result["auto_tuned"] = auto_tuned
     return ok(result, project=project)
 
 
@@ -422,6 +462,90 @@ async def _handle_diagnose(args: dict) -> CallToolResult:
         _write_lock_release()
 
 
+async def _handle_tree(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        conn = _get_conn()
+        result = _tree(
+            state_id=args.get("state_id"),
+            project=args.get("project"),
+            conn=conn,
+            depth=args.get("depth", 3),
+            up_depth=args.get("up_depth", 0),
+            include_activation=args.get("include_activation", True),
+            include_status=args.get("include_status", True),
+            include_edges=args.get("include_edges", False),
+            fmt=args.get("format", "json"),
+        )
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_compress(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    try:
+        conn = _get_conn()
+        project = args["project"]
+        result = _compress(
+            project, conn, _config,
+            older_than_days=args.get("older_than_days", 30),
+            merge_orphans=args.get("merge_orphans", True),
+            session_id=_SESSION_ID,
+        )
+        return ok(result, project=project)
+    finally:
+        _write_lock_release()
+
+
+async def _handle_prune(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    notif_project: str | None = None
+    try:
+        conn = _get_conn()
+        result = _prune(
+            args["state_id"], conn, _config,
+            summary_label=args.get("summary_label"),
+            keep_events=args.get("keep_events", False),
+            session_id=_SESSION_ID,
+        )
+        if result.get("ok"):
+            row = conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
+            if row:
+                notif_project = row["project"]
+        return ok(result)
+    finally:
+        _write_lock_release()
+    if notif_project:
+        await _push_resource_notification(notif_project)
+
+
+async def _handle_compare_states(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        conn = _get_conn()
+        result = _compare_states(
+            args["state_a"],
+            args["state_b"],
+            conn,
+        )
+        return ok(result)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_simulate(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        conn = _get_conn()
+        project = args["project"]
+        cursor = args.get("cursor") or _get_cursor(project)
+        result = _simulate(project, args["sequence"], conn, _config, cursor=cursor)
+        return ok(result, project=project)
+    finally:
+        _read_lock_release()
+
+
 HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
@@ -437,6 +561,11 @@ HANDLERS = {
     "set_goal": _handle_set_goal,
     "abandon": _handle_abandon,
     "diagnose": _handle_diagnose,
+    "tree": _handle_tree,
+    "compress": _handle_compress,
+    "prune": _handle_prune,
+    "compare_states": _handle_compare_states,
+    "simulate": _handle_simulate,
 }
 
 
@@ -452,6 +581,7 @@ async def list_resources(req: Any = None) -> ListResourcesResult:
     resources: list[Resource] = [
         Resource(uri="openplan://projects", name="All Projects", description="All projects with state counts", mimeType="application/json"),
         Resource(uri="openplan://analytics", name="Analytics", description="Cross-project analytics and anomaly detection", mimeType="application/json"),
+        Resource(uri="openplan://tuning", name="Global Tuning", description="Per-action tuning statistics across all projects", mimeType="application/json"),
     ]
     if cursor:
         project_rows = conn.execute(
@@ -466,6 +596,8 @@ async def list_resources(req: Any = None) -> ListResourcesResult:
     for row in project_rows:
         p = row["project"]
         resources.append(Resource(uri=f"openplan://{p}/graph", name=f"{p} Graph", description=f"Full graph for {p}", mimeType="application/json"))
+        resources.append(Resource(uri=f"openplan://{p}/edges", name=f"{p} Edges", description=f"All edges for {p}", mimeType="application/json"))
+        resources.append(Resource(uri=f"openplan://{p}/health", name=f"{p} Health", description=f"Health snapshot for {p}", mimeType="application/json"))
     next_cursor = project_rows[-1]["project"] if len(project_rows) == _RESOURCE_PAGE_SIZE else None
     return ListResourcesResult(resources=resources, nextCursor=next_cursor)
 
@@ -478,11 +610,40 @@ async def read_resource(uri: str) -> ReadResourceResult:
         return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(projects), mimeType="application/json")])
     if uri == "openplan://analytics":
         return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(compute_analytics(conn)), mimeType="application/json")])
+    if uri == "openplan://tuning":
+        tuning_data = {}
+        for r in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'tuning:%'"):
+            try:
+                tuning_data[r["key"][7:]] = json.loads(r["value"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(tuning_data), mimeType="application/json")])
     m = re.match(r"openplan://(.+?)/graph", uri)
     if m:
         project = m.group(1)
         health = _graph_health(project, conn)
         return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(health), mimeType="application/json")])
+    m = re.match(r"openplan://(.+?)/edges", uri)
+    if m:
+        project = m.group(1)
+        edges = [dict(r) for r in conn.execute(
+            "SELECT e.*, src.label AS source_label, tgt.label AS target_label "
+            "FROM edges e JOIN nodes src ON src.id = e.source_id JOIN nodes tgt ON tgt.id = e.target_id "
+            "WHERE src.project = ?", (project,)
+        ).fetchall()]
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(edges), mimeType="application/json")])
+    m = re.match(r"openplan://(.+?)/health", uri)
+    if m:
+        project = m.group(1)
+        health = _graph_health(project, conn)
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(health), mimeType="application/json")])
+    m = re.match(r"openplan://(.+?)/states/(S-\d{6})$", uri)
+    if m:
+        project = m.group(1)
+        state_id = m.group(2)
+        node = conn.execute("SELECT * FROM nodes WHERE id = ? AND project = ?", (state_id, project)).fetchone()
+        if node:
+            return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps(dict(node)), mimeType="application/json")])
     return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=json.dumps({"error": "not found"}), mimeType="application/json")])
 
 
@@ -497,12 +658,106 @@ async def list_prompts() -> list[Prompt]:
                 PromptArgument(name="project", description="Project slug", required=False),
             ],
         ),
+        Prompt(
+            name="feature-plan",
+            title="Feature Planning",
+            description="Plan a new feature: recommend next target, simulate path, then act. Use when starting a new feature or work item.",
+            arguments=[
+                PromptArgument(name="project", description="Project slug", required=True),
+                PromptArgument(name="feature", description="Description of the feature to plan", required=True),
+            ],
+        ),
+        Prompt(
+            name="debug-blocked",
+            title="Debug Blocked State",
+            description="Diagnose a blocked state: read its context, inspect the tree, find alternative paths. Use when a state is blocked or cascade_blocked.",
+            arguments=[
+                PromptArgument(name="project", description="Project slug", required=True),
+                PromptArgument(name="state_id", description="ID of the blocked state", required=True),
+            ],
+        ),
+        Prompt(
+            name="review-progress",
+            title="Review Project Progress",
+            description="Audit project health: reconstruct the full picture, run tuning, check diagnostics. Use periodically or after completing a milestone.",
+            arguments=[
+                PromptArgument(name="project", description="Project slug", required=True),
+            ],
+        ),
     ]
 
 
 @app.get_prompt()
 async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetPromptResult:
     project = arguments.get("project", "<project>") if arguments else "<project>"
+
+    if name == "feature-plan":
+        feature = arguments.get("feature", "the feature") if arguments else "the feature"
+        return GetPromptResult(
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=f"""Plan the feature: {feature}
+
+Project: {project}
+
+1. Call recommend(project="{project}") to find the best next target
+2. Call plan() to find the cheapest path to that target
+3. Call simulate() to estimate total cost and probability
+4. Call act() to execute the first step
+
+Use the goal parameter if the project has a defined end state.""",
+                    ),
+                ),
+            ],
+        )
+
+    if name == "debug-blocked":
+        state_id = arguments.get("state_id", "<state_id>") if arguments else "<state_id>"
+        return GetPromptResult(
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=f"""Debug blocked state {state_id} in project {project}
+
+1. Call read_state(state_id="{state_id}") to understand the state
+2. Call tree(state_id="{state_id}", up_depth=1) to see parent and siblings
+3. Call plan() to find alternative paths around the block
+4. If alternatives exist, call act() to unblock
+
+Check if downstream states are cascade_blocked and need recovery.""",
+                    ),
+                ),
+            ],
+        )
+
+    if name == "review-progress":
+        return GetPromptResult(
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=f"""Review progress for project {project}
+
+1. Call reconstruct(project="{project}") for the full picture
+2. Call tune() for calibration statistics
+3. Call diagnose() for system health issues
+
+Check:
+- Calibration rate (should be > 0.5)
+- Orphan count (should not exceed 5 per 10 states)
+- Blocked states and cascade_blocked propagation
+- Self-tuning adjustments in meta:self_tuning:history""",
+                    ),
+                ),
+            ],
+        )
+
     return GetPromptResult(
         messages=[
             PromptMessage(

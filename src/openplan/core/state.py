@@ -104,23 +104,55 @@ def _increment_visit(state_id: str, conn: sqlite3.Connection) -> None:
     )
 
 
-def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> None:
+def _auto_calibrate_edge(conn: sqlite3.Connection, edge: dict, target_id: str, outcome: str = "success", actual_cost: float | None = None, source: str = "auto") -> None:
     wh_raw = edge.get("weight_history") or "[]"
     try:
         wh = json.loads(wh_raw) if isinstance(wh_raw, str) else (wh_raw or [])
     except (json.JSONDecodeError, TypeError):
         wh = []
+    if source != "agent":
+        has_real = any(not e.get("auto") for e in wh)
+        if has_real:
+            return
+    cost_value = actual_cost if actual_cost is not None else edge.get("cost_tokens", 10000)
     now = _now()
     wh.append({
-        "actual_cost": {"tokens": edge.get("cost_tokens", 10000)},
-        "expected_cost": {"tokens": edge.get("cost_tokens", 10000)},
+        "actual_cost": {"tokens": cost_value},
+        "expected_cost": {"tokens": cost_value},
+        "outcome": outcome,
+        "source": source,
         "learned_at": now,
-        "auto": True,
     })
     conn.execute(
         "UPDATE edges SET weight_history = ?, updated_at = ? WHERE source_id = ? AND target_id = ? AND action = ?",
         (json.dumps(wh), now, edge["source_id"], target_id, edge["action"]),
     )
+
+
+def _chain_calibrate(conn: sqlite3.Connection, project: str, current_event_id: str) -> None:
+    prev = conn.execute(
+        "SELECT payload, node_id FROM events WHERE project = ? AND event_type = 'acted' "
+        "AND id != ? ORDER BY created_at DESC LIMIT 1",
+        (project, current_event_id),
+    ).fetchone()
+    if not prev:
+        return
+    try:
+        prev_payload = json.loads(prev["payload"]) if isinstance(prev["payload"], str) else prev["payload"]
+    except (json.JSONDecodeError, TypeError):
+        return
+    prev_from = prev_payload.get("source")
+    prev_to = prev_payload.get("target")
+    prev_action = prev_payload.get("action")
+    if not all([prev_from, prev_to, prev_action]):
+        return
+    prev_edge = conn.execute(
+        "SELECT * FROM edges WHERE source_id = ? AND target_id = ? AND action = ?",
+        (prev_from, prev_to, prev_action),
+    ).fetchone()
+    if not prev_edge:
+        return
+    _auto_calibrate_edge(conn, dict(prev_edge), prev_to, outcome="success")
 
 
 def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 24.0) -> None:
@@ -167,7 +199,10 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
         ).fetchone()
         if existing:
             if goal:
-                conn.execute("UPDATE nodes SET goal = ?, updated_at = ? WHERE id = ?", (goal, _now(), existing["id"]))
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})),
+                )
                 _record_event(conn, existing["id"], project, "goal_set", {"goal": goal}, session_id)
             if project_type:
                 conn.execute("UPDATE nodes SET project_type = ?, updated_at = ? WHERE id = ?", (project_type, _now(), existing["id"]))
@@ -178,9 +213,25 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
         if project_type:
             conn.execute("UPDATE nodes SET project_type = ?, updated_at = ? WHERE id = ?", (project_type, now, sid))
         if goal:
-            conn.execute("UPDATE nodes SET goal = ?, updated_at = ? WHERE id = ?", (goal, now, sid))
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})),
+            )
             _record_event(conn, sid, project, "goal_set", {"goal": goal}, session_id)
         conn.execute("UPDATE nodes SET updated_at = ? WHERE id = ?", (now, sid))
+        if project_type:
+            for bl in conn.execute(
+                "SELECT action, cost_tokens, cost_risk, sample_count FROM cost_baselines "
+                "WHERE project IS NULL AND project_type = ?",
+                (project_type,),
+            ).fetchall():
+                conn.execute(
+                    "INSERT OR IGNORE INTO cost_baselines "
+                    "(project, project_type, action, cost_tokens, cost_risk, sample_count, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (project, project_type, bl["action"], bl["cost_tokens"],
+                     bl["cost_risk"], bl["sample_count"], now),
+                )
         _record_event(conn, sid, project, "init", {"label": label or project, "project_type": project_type, "goal": goal}, session_id)
         _safe_release(conn, "init_tx", owned_init)
         return {"ok": True, "state_id": sid, "label": label or project, "project_type": project_type, "goal": goal, "created": True}
@@ -218,26 +269,33 @@ def _check_preconditions(edge: dict, conn: sqlite3.Connection) -> None:
                     raise PreconditionError(source_id, edge.get("action", ""), f"{field}={expected}")
 
 
-def _update_cost_baseline(project_type: str, action: str, cost_tokens: float, cost_risk: float, conn: sqlite3.Connection) -> None:
-    if not project_type:
-        return
-    existing = conn.execute(
-        "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines WHERE project_type = ? AND action = ?",
-        (project_type, action),
+def _upsert_baseline(conn: sqlite3.Connection, project: str | None, project_type: str, action: str, cost_tokens: float, cost_risk: float) -> None:
+    row = conn.execute(
+        "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines "
+        "WHERE project IS NOT DISTINCT FROM ? AND project_type = ? AND action = ?",
+        (project, project_type, action),
     ).fetchone()
-    if existing:
-        n = existing["sample_count"] + 1
-        avg_tokens = (existing["cost_tokens"] * existing["sample_count"] + cost_tokens) / n
-        avg_risk = (existing["cost_risk"] * existing["sample_count"] + cost_risk) / n
+    if row:
+        n = row["sample_count"] + 1
+        avg_tokens = (row["cost_tokens"] * row["sample_count"] + cost_tokens) / n
+        avg_risk = (row["cost_risk"] * row["sample_count"] + cost_risk) / n
         conn.execute(
-            "UPDATE cost_baselines SET cost_tokens = ?, cost_risk = ?, sample_count = ?, updated_at = ? WHERE project_type = ? AND action = ?",
-            (round(avg_tokens, 2), round(avg_risk, 4), n, _now(), project_type, action),
+            "UPDATE cost_baselines SET cost_tokens = ?, cost_risk = ?, sample_count = ?, updated_at = ? "
+            "WHERE project IS NOT DISTINCT FROM ? AND project_type = ? AND action = ?",
+            (round(avg_tokens, 2), round(avg_risk, 4), n, _now(), project, project_type, action),
         )
     else:
         conn.execute(
-            "INSERT INTO cost_baselines (project_type, action, cost_tokens, cost_risk, sample_count, updated_at) VALUES (?, ?, ?, ?, 1, ?)",
-            (project_type, action, cost_tokens, cost_risk, _now()),
+            "INSERT INTO cost_baselines (project, project_type, action, cost_tokens, cost_risk, sample_count, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (project, project_type, action, cost_tokens, cost_risk, _now()),
         )
+
+
+def _update_cost_baseline(project: str, project_type: str, action: str, cost_tokens: float, cost_risk: float, conn: sqlite3.Connection) -> None:
+    if project:
+        _upsert_baseline(conn, project, project_type, action, cost_tokens, cost_risk)
+    if project_type:
+        _upsert_baseline(conn, None, project_type, action, cost_tokens, cost_risk)
 
 
 def act(
@@ -249,6 +307,7 @@ def act(
     evidence: str | None = None,
     thought: str | None = None,
     expected_cost: dict | None = None,
+    actual_cost: dict | None = None,
     session_id: str = "",
     reasoning: dict | None = None,
     postconditions: dict | None = None,
@@ -266,9 +325,22 @@ def act(
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
             if not tgt:
                 target_id = _ensure_node(src["project"], target, conn, parent_id=state_id if state_id != src["id"] else None)
+            bl_cost = 10000
+            if src.get("project_type"):
+                bl = conn.execute(
+                    "SELECT cost_tokens FROM cost_baselines WHERE project = ? AND action = ?",
+                    (src["project"], action),
+                ).fetchone()
+                if not bl and src.get("project_type"):
+                    bl = conn.execute(
+                        "SELECT cost_tokens FROM cost_baselines WHERE project IS NULL AND project_type = ? AND action = ?",
+                        (src.get("project_type", ""), action),
+                    ).fetchone()
+                if bl:
+                    bl_cost = bl["cost_tokens"]
             conn.execute(
-                "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, ?, 0.8, ?, ?)",
-                (state_id, target_id, action, _now(), _now()),
+                "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, prob, created_at, updated_at) VALUES (?, ?, ?, ?, 0.8, ?, ?)",
+                (state_id, target_id, action, bl_cost, _now(), _now()),
             )
             if reasoning:
                 reasoning_payload = ReasoningPayload.from_props(reasoning)
@@ -302,14 +374,18 @@ def act(
         if _detect_cycle(conn, state_id, target_id, action):
             raise CycleDetectedError(state_id, target_id)
 
+        cost_value = actual_cost.get("tokens", edge.get("cost_tokens", 10000)) if actual_cost else edge.get("cost_tokens", 10000)
+        cost_source = "agent" if actual_cost else "auto"
         payload = {
             "action": action, "source": state_id, "target": target_id,
             "evidence": evidence, "thought": thought, "expected_cost": expected_cost,
-            "cost_actual": {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)},
+            "cost_actual": {"tokens": cost_value, "risk": edge.get("cost_risk", 0.1)},
+            "cost_source": cost_source,
         }
-        _record_event(conn, state_id, src["project"], "acted", payload, session_id)
+        event_id = _record_event(conn, state_id, src["project"], "acted", payload, session_id)
         _increment_visit(target_id, conn)
-        _auto_calibrate(conn, edge, target_id)
+        _auto_calibrate_edge(conn, edge, target_id, outcome="success", actual_cost=cost_value, source=cost_source)
+        _chain_calibrate(conn, src["project"], event_id)
         if postconditions:
             current_props = json.loads(
                 conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone()["props"]
@@ -318,10 +394,8 @@ def act(
             merged.update(postconditions)
             conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
                          (json.dumps(merged), _now(), target_id))
-        cost_actual = {"tokens": edge.get("cost_tokens", 10000), "risk": edge.get("cost_risk", 0.1)}
         project_type = src.get("project_type", "") or ""
-        if project_type:
-            _update_cost_baseline(project_type, action, cost_actual["tokens"], cost_actual["risk"], conn)
+        _update_cost_baseline(src["project"], project_type, action, cost_value, edge.get("cost_risk", 0.1), conn)
         _prune_stale_branches(state_id, conn, session_id)
         conn.execute("UPDATE nodes SET status = 'done', updated_at = ? WHERE id = ? AND status NOT IN ('blocked', 'superseded')", (_now(), state_id))
         conn.execute("UPDATE nodes SET status = 'in_progress', updated_at = ? WHERE id = ? AND status NOT IN ('done', 'blocked', 'superseded')", (_now(), target_id))
@@ -334,8 +408,8 @@ def act(
         cost_delta = None
         if expected_cost is not None:
             cost_delta = {
-                "tokens": cost_actual["tokens"] - expected_cost.get("tokens", 0),
-                "risk": cost_actual["risk"] - expected_cost.get("risk", 0.0),
+                "tokens": cost_value - expected_cost.get("tokens", 0),
+                "risk": edge.get("cost_risk", 0.1) - expected_cost.get("risk", 0.0),
             }
 
         frontier = _get_frontier_states(src["project"], conn, config)
@@ -350,7 +424,7 @@ def act(
     return {
         "ok": True, "next_state": target_id, "cursor": target_id,
         "activation_delta": {state_id: get_activation(state_id, conn, config), target_id: get_activation(target_id, conn, config)},
-        "cost_actual": cost_actual, "cost_delta": cost_delta,
+        "cost_actual": {"tokens": cost_value, "risk": edge.get("cost_risk", 0.1)}, "cost_delta": cost_delta, "cost_source": cost_source,
         "new_frontier": [s["id"] for s in frontier],
     }
 

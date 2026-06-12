@@ -15,20 +15,20 @@ from openplan.core.telemetry import get_telemetry
 
 def _get_project_goal(project: str, conn: sqlite3.Connection) -> str:
     row = conn.execute(
-        "SELECT goal FROM nodes WHERE project = ? AND goal != '' ORDER BY created_at ASC LIMIT 1",
-        (project,),
+        "SELECT value FROM meta WHERE key = ?", (f"goal:{project}",),
     ).fetchone()
-    return row["goal"] if row else ""
+    if row:
+        try:
+            val = json.loads(row["value"])
+            return val.get("text", "") if isinstance(val, dict) else str(val)
+        except (json.JSONDecodeError, TypeError):
+            return str(row["value"])
+    return ""
 
 
 def _find_goal_aligned_states(goal: str, project: str, conn: sqlite3.Connection, conn_sqlite: sqlite3.Connection) -> list[dict]:
-    like = f"%{goal}%"
-    rows = conn.execute(
-        "SELECT id, label, activation, status FROM nodes WHERE project = ? AND (label LIKE ? OR props LIKE ?) AND status NOT IN ('done', 'superseded') ORDER BY activation DESC LIMIT 10",
-        (project, like, like),
-    ).fetchall()
-    results = [dict(r) for r in rows]
-    return results
+    from openplan.core.resolve import resolve_goal_aligned
+    return resolve_goal_aligned(goal, project, conn, top_k=10)
 
 
 def recommend(
@@ -59,17 +59,12 @@ def recommend(
             "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (cursor,)
         ).fetchone()
         if not has_edges:
-            root = conn.execute(
-                "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
-                (project,),
+            has_incoming = conn.execute(
+                "SELECT 1 FROM edges WHERE target_id = ? LIMIT 1", (cursor,)
             ).fetchone()
-            cursor = root["id"] if root else None
-            if cursor:
-                root_has_edges = conn.execute(
-                    "SELECT 1 FROM edges WHERE source_id = ? LIMIT 1", (cursor,)
-                ).fetchone()
-                if not root_has_edges:
-                    total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
+            if not has_incoming:
+                total = conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ?", (project,)).fetchone()["cnt"]
+                if total <= 1:
                     return {"target": None, "reason": "project has one state with no outgoing edges", "suggested_action": {"tool": "act", "action": "implement", "target": cursor}, "state_of_project": {"total_states": total, "completed": 0, "remaining": total, "calibration_rate": 0.0}}
 
     if not cursor:
@@ -153,6 +148,17 @@ def recommend(
     ).fetchone()["mv"] or 0
 
     threshold = config.get("activation_threshold", 0.5)
+    st_row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'self_tuning:overrides'"
+    ).fetchone()
+    if st_row:
+        try:
+            st_overrides = json.loads(st_row["value"])
+            thr_adj = st_overrides.get("threshold_adjustments", {})
+            if "activation_threshold" in thr_adj:
+                threshold = thr_adj["activation_threshold"]
+        except (json.JSONDecodeError, TypeError):
+            pass
     telemetry = get_telemetry()
     conversion = telemetry.get_global_conversion_rate()
 
@@ -188,6 +194,17 @@ def recommend(
             depth_map[r["id"]] = r["depth"]
         max_depth = max(depth_map.values()) if depth_map else 0
 
+    goal_relevance_map: dict[str, float] = {}
+    if effective_goal:
+        from openplan.core.resolve import resolve_target
+        goal_results = resolve_target(effective_goal, project, conn, top_k=20)
+        for r in goal_results:
+            sim = r.get("similarity", 0.0)
+            if sim > 0:
+                goal_relevance_map[r["id"]] = sim
+            else:
+                goal_relevance_map[r["id"]] = 0.5
+
     scored = []
     for r in node_rows:
         nid, label, activation = r["id"], r["label"], r["activation"]
@@ -200,6 +217,9 @@ def recommend(
         if goal_aware and max_depth > 0:
             depth_bonus = 0.2 * (depth_map.get(nid, 0) / max_depth)
             base_score += depth_bonus
+        if nid in goal_relevance_map:
+            goal_relevance = goal_relevance_map[nid]
+            base_score = base_score * 0.4 + goal_relevance * 0.6
         scored.append((base_score, nid, label, activation, orphan))
 
     scored.sort(key=lambda x: -x[0])

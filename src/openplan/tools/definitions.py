@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from mcp.types import Tool as MCPTool
+from mcp.types import (
+    Annotations as MCPAnnotations,
+    Tool as MCPTool,
+    ToolAnnotations as MCPToolAnnotations,
+    ToolExecution as MCPToolExecution,
+)
 
 
 def t(
@@ -10,6 +15,8 @@ def t(
     properties: dict | None = None,
     required: list[str] | None = None,
     outputSchema: dict | None = None,
+    annotations: MCPToolAnnotations | None = None,
+    execution: MCPToolExecution | None = None,
 ) -> MCPTool:
     schema: dict[str, object] = {
         "type": "object",
@@ -24,8 +31,15 @@ def t(
         description=description,
         inputSchema=schema,
         outputSchema=outputSchema,
+        annotations=annotations,
+        execution=execution,
     )
 
+
+_READ_ONLY = MCPToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True)
+_READ_ONLY_NO_IDEMP = MCPToolAnnotations(readOnlyHint=True, destructiveHint=False)
+_DESTRUCTIVE = MCPToolAnnotations(readOnlyHint=False, destructiveHint=True)
+_DESTRUCTIVE_IDEMP = MCPToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True)
 
 _TOOLS: list[MCPTool] = [
         t(
@@ -65,9 +79,11 @@ _TOOLS: list[MCPTool] = [
             "evidence": {"type": "string", "maxLength": 2048, "description": "Optional evidence URL or description"},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
             "expected_cost": {"type": "object", "maxProperties": 10, "description": "Optional expected cost estimate"},
+            "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent on this action. When provided, used for edge calibration. Keys: tokens (number), cost (number, optional)."},
             "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs describing what becomes true after this action. Stored in the target state's props."},
         },
         ["project", "action"],
+        annotations=_DESTRUCTIVE,
         outputSchema={
             "type": "object",
             "properties": {
@@ -79,16 +95,17 @@ _TOOLS: list[MCPTool] = [
             "required": ["next_state", "cursor"],
         },
     ),
-    t(
-        "recommend",
-        "Recommend Best Target",
-        "Analyze the graph to find the highest-value target and plan an optimal A* path to it. When a goal is set (via init or passed directly), uses goal-oriented planning: finds the cheapest path from cursor to states matching the goal. Without a goal, uses the activation+orphan scoring system to find the best next state. When project is omitted, searches across all projects.",
+        t(
+            "recommend",
+            "Recommend Best Target",
+            "Analyze the graph to find the highest-value target and plan an optimal A* path to it. When a goal is set (via init or passed directly), uses goal-oriented planning. Without a goal, uses the activation+orphan scoring system.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug (optional; omit for cross-project)"},
             "goal": {"type": "string", "maxLength": 500, "description": "Optional natural language description of what to work on. Overrides the project's stored goal."},
             "max_cost": {"type": "number", "description": "Optional max cost constraint"},
             "cursor": {"type": "string", "maxLength": 20, "description": "Optional cursor override"},
         },
+        annotations=_READ_ONLY,
         outputSchema={
             "type": "object",
             "properties": {
@@ -199,17 +216,19 @@ _TOOLS: list[MCPTool] = [
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
             "target": {"type": "string", "maxLength": 500, "description": "Target state ID or natural language description"},
-            "constraints": {
-                "type": "object",
-                "maxProperties": 10,
-                "description": "Optional constraints: max_cost, min_prob, expansion_limit, avoid_states",
-                "properties": {
-                    "max_cost": {"type": "number"},
-                    "min_prob": {"type": "number"},
-                    "expansion_limit": {"type": "integer"},
-                    "avoid_states": {"type": "array", "items": {"type": "string"}},
+                "constraints": {
+                    "type": "object",
+                    "maxProperties": 10,
+                    "description": "Optional constraints: max_cost, min_prob, expansion_limit, avoid_states, top_k, risk_adjustment",
+                    "properties": {
+                        "max_cost": {"type": "number"},
+                        "min_prob": {"type": "number"},
+                        "expansion_limit": {"type": "integer"},
+                        "avoid_states": {"type": "array", "items": {"type": "string"}},
+                        "top_k": {"type": "integer", "minimum": 1, "maximum": 5, "description": "Return top K alternative paths (default 1)"},
+                        "risk_adjustment": {"type": "string", "enum": ["none", "probability", "variance"], "description": "How to adjust cost for edge probability"},
+                    },
                 },
-            },
         },
         ["project", "target"],
         outputSchema={
@@ -332,6 +351,124 @@ _TOOLS: list[MCPTool] = [
                 "issues": {"type": "array"},
             },
             "required": ["ok", "issues_found"],
+        },
+    ),
+    t(
+        "tree",
+        "Tree Visualization",
+        "Return a tree view of the state graph from a given state. Shows parent-child relationships with activation, status, and edge info. Accepts state_id or project for root discovery.",
+        {
+            "state_id": {"type": "string", "maxLength": 20, "description": "Starting state ID. Defaults to project root."},
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug (needed when state_id is omitted)."},
+            "depth": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "Maximum depth to traverse (default 3)."},
+            "up_depth": {"type": "integer", "minimum": 0, "maximum": 5, "default": 0, "description": "How many parent levels to show above the starting state (default 0)."},
+            "format": {"type": "string", "enum": ["json", "ascii"], "default": "json", "description": "Output format: json or ascii tree."},
+            "include_activation": {"type": "boolean", "default": True, "description": "Include activation scores."},
+            "include_status": {"type": "boolean", "default": True, "description": "Include status values."},
+            "include_edges": {"type": "boolean", "default": False, "description": "Include edge info (action, cost)."},
+        },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "format": {"type": "string"},
+                "tree": {"anyOf": [{"type": "object"}, {"type": "string"}, {"type": "null"}]},
+                "node_count": {"type": "integer"},
+                "max_depth": {"type": "integer"},
+                "branching_factor": {"type": "number"},
+            },
+            "required": ["ok", "format", "tree"],
+        },
+    ),
+    t(
+        "compress",
+        "Compress Project History",
+        "Archive old events and merge low-activation orphan states. Keeps the active graph manageable by moving stale data to the events_archive table.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "older_than_days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 365, "description": "Archive events older than this many days (default 30)."},
+            "merge_orphans": {"type": "boolean", "default": True, "description": "Merge low-activation orphans into the most active state."},
+        },
+        ["project"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "archived_events": {"type": "integer"},
+                "deleted_events": {"type": "integer"},
+                "merged_orphans": {"type": "integer"},
+            },
+            "required": ["ok"],
+        },
+    ),
+    t(
+        "prune",
+        "Prune Completed Subtree",
+        "Collapse done/leaf states into a single summary state. Reduces graph complexity by archiving completed subgraphs. Only works when all descendants are 'done' or 'superseded'.",
+        {
+            "state_id": {"type": "string", "maxLength": 20, "description": "Root of the subtree to prune. All descendants must be 'done' or 'superseded'."},
+            "summary_label": {"type": "string", "maxLength": 200, "description": "Label for the summary state. Defaults to 'Pruned: <original_label>'."},
+            "keep_events": {"type": "boolean", "default": False, "description": "Preserve individual events in the events table."},
+        },
+        ["state_id"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "state_id": {"type": "string"},
+                "summary_label": {"type": "string"},
+                "collapsed_nodes": {"type": "integer"},
+                "collapsed_edges": {"type": "integer"},
+            },
+            "required": ["ok", "state_id"],
+        },
+    ),
+    t(
+        "simulate",
+        "Forward Simulation",
+        "Simulate a sequence of actions without mutating state. Returns expected costs, probabilities, and risk metrics for each step. Use this to compare strategies before committing to an action.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "sequence": {"type": "array", "items": {"type": "object", "properties": {"action": {"type": "string"}, "target": {"type": "string"}}, "required": ["target"]}, "minItems": 1, "maxItems": 10, "description": "Sequence of action steps to simulate"},
+            "cursor": {"type": "string", "maxLength": 20, "description": "Optional starting cursor. Defaults to current cursor or project root."},
+        },
+        ["project", "sequence"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "project": {"type": "string"},
+                "from": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "trajectory": {"type": "array"},
+                "total_cost": {"type": "number"},
+                "cumulative_prob": {"type": "number"},
+                "steps": {"type": "integer"},
+            },
+            "required": ["ok", "project", "trajectory"],
+        },
+    ),
+    t(
+        "compare_states",
+        "Compare Two States",
+        "Compare two states side-by-side. Returns a diff of their props, status, activation, edges, events, and embedding similarity (when available).",
+        {
+            "state_a": {"type": "string", "maxLength": 20, "description": "First state ID"},
+            "state_b": {"type": "string", "maxLength": 20, "description": "Second state ID"},
+        },
+        ["state_a", "state_b"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "state_a": {"type": "object"},
+                "state_b": {"type": "object"},
+                "props_diff": {"type": "object"},
+                "status_diff": {"type": "object"},
+                "activation_diff": {"type": "object"},
+                "edges_diff": {"type": "object"},
+                "embedding_similarity": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            },
+            "required": ["ok", "state_a", "state_b"],
         },
     ),
 ]

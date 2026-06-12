@@ -137,13 +137,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS cost_baselines (
-            project_type TEXT NOT NULL,
+            project_type TEXT NOT NULL DEFAULT '',
+            project      TEXT,
             action       TEXT NOT NULL,
             cost_tokens  REAL NOT NULL DEFAULT 10000.0,
             cost_risk    REAL NOT NULL DEFAULT 0.1,
             sample_count INTEGER NOT NULL DEFAULT 1,
             updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            PRIMARY KEY (project_type, action)
+            PRIMARY KEY (project_type, action, project)
         )
     """)
     conn.execute("""
@@ -157,7 +158,66 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
     """)
+    _migrate_v0_3_0(conn)
     try_init_vec0(conn)
+
+
+def _migrate_v0_3_0(conn: sqlite3.Connection) -> None:
+    has_goal = any(
+        r["name"] == "goal"
+        for r in conn.execute("PRAGMA table_info(nodes)").fetchall()
+    )
+    if not has_goal:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) "
+        "SELECT 'goal:' || project, json_object('text', goal, 'target_state_id', NULL) "
+        "FROM nodes WHERE goal != '' AND goal IS NOT NULL"
+    )
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.executescript("""
+        CREATE TABLE nodes_v2 (
+            id         TEXT PRIMARY KEY,
+            label      TEXT NOT NULL DEFAULT '',
+            activation REAL NOT NULL DEFAULT 0.0,
+            frontier   INTEGER NOT NULL DEFAULT 0,
+            project    TEXT NOT NULL,
+            props      TEXT NOT NULL DEFAULT '{}',
+            parent_id  TEXT REFERENCES nodes_v2(id),
+            status     TEXT NOT NULL DEFAULT 'pending',
+            project_type TEXT NOT NULL DEFAULT '',
+            terminal   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO nodes_v2 SELECT
+            id, label, activation, frontier, project, props,
+            parent_id, status, project_type, terminal, created_at, updated_at
+        FROM nodes;
+        DROP TABLE nodes;
+        ALTER TABLE nodes_v2 RENAME TO nodes;
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project)")
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
+            INSERT OR REPLACE INTO nodes_fts(rowid, label, project)
+            VALUES (new.rowid, new.label, new.project);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE OF label ON nodes BEGIN
+            UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
+        END
+    """)
+    conn.executescript("""
+        DELETE FROM nodes_fts;
+        INSERT INTO nodes_fts(rowid, label, project) SELECT rowid, label, project FROM nodes;
+    """)
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("ALTER TABLE cost_baselines ADD COLUMN project TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 def try_init_vec0(conn: sqlite3.Connection) -> bool:

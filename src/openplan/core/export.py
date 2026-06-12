@@ -5,8 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from openplan.core.activation import get_activation, recompute_all_dirty
-from openplan.core.errors import OpenPlanError
+from openplan.core.activation import get_activation, mark_dirty, recompute_all_dirty
+from openplan.core.errors import InvalidStateError, OpenPlanError
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
@@ -134,6 +134,95 @@ def compress(
         raise
 
     return {"ok": True, "archived_events": archived, "deleted_events": deleted, "merged_orphans": merged}
+
+
+def prune(
+    state_id: str,
+    conn: sqlite3.Connection,
+    config: dict[str, Any],
+    summary_label: str | None = None,
+    keep_events: bool = False,
+    session_id: str = "",
+) -> dict[str, Any]:
+    node = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
+    if not node:
+        raise InvalidStateError(state_id)
+    root_check = conn.execute(
+        "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        (node["project"],),
+    ).fetchone()
+    if root_check and root_check["id"] == state_id:
+        return {"ok": False, "error": "Cannot prune project root"}
+
+    all_descendants = set()
+    stack = [state_id]
+    while stack:
+        nid = stack.pop()
+        children = conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (nid,)).fetchall()
+        for c in children:
+            tid = c["target_id"]
+            if tid not in all_descendants:
+                all_descendants.add(tid)
+                stack.append(tid)
+
+    blockers = []
+    for did in all_descendants:
+        st = conn.execute("SELECT status FROM nodes WHERE id = ?", (did,)).fetchone()
+        if st and st["status"] not in ("done", "superseded"):
+            blockers.append({"id": did, "status": st["status"]})
+    if blockers:
+        return {"ok": False, "error": "Cannot prune: descendants are not all done/superseded", "blockers": blockers}
+
+    now = _now()
+    owned = _safe_savepoint(conn, "prune_tx")
+    try:
+        if not keep_events:
+            all_ids = [state_id] + list(all_descendants)
+            placeholders = ",".join("?" * len(all_ids))
+            conn.execute(
+                f"INSERT OR IGNORE INTO events_archive SELECT * FROM events WHERE node_id IN ({placeholders})",
+                all_ids,
+            )
+            conn.execute(
+                f"DELETE FROM events WHERE node_id IN ({placeholders})", all_ids,
+            )
+
+        collapsed_count = len(all_descendants)
+        collapsed_edges = 0
+        for did in all_descendants:
+            e_cnt = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM edges WHERE source_id = ? OR target_id = ?",
+                (did, did),
+            ).fetchone()["cnt"]
+            collapsed_edges += e_cnt
+            conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", (did, did))
+            conn.execute("DELETE FROM nodes WHERE id = ?", (did,))
+
+        summary = summary_label or f"Pruned: {node['label']}"
+        conn.execute(
+            "UPDATE nodes SET label = ?, status = 'done', updated_at = ?, props = json_set(props, '$.pruned_meta', ?) WHERE id = ?",
+            (summary, now, json.dumps({"collapsed_nodes": collapsed_count, "collapsed_edges": collapsed_edges}), state_id),
+        )
+        mark_dirty(state_id, conn)
+        _record_event(conn, state_id, node["project"], "pruned", {
+            "action": "pruned",
+            "state_id": state_id,
+            "collapsed_nodes": collapsed_count,
+            "collapsed_edges": collapsed_edges,
+            "summary_label": summary,
+        }, session_id)
+        _safe_release(conn, "prune_tx", owned)
+    except Exception:
+        _safe_rollback(conn, "prune_tx", owned)
+        raise
+
+    return {
+        "ok": True,
+        "state_id": state_id,
+        "summary_label": summary,
+        "collapsed_nodes": collapsed_count,
+        "collapsed_edges": collapsed_edges,
+    }
 
 
 def project_list(conn: sqlite3.Connection) -> dict[str, Any]:

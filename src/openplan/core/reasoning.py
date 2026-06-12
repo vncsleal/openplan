@@ -14,7 +14,7 @@ VALID_TYPES = frozenset({
 })
 
 STATUS_VALUES = frozenset({
-    "pending", "in_progress", "done", "blocked", "superseded",
+    "pending", "in_progress", "done", "blocked", "superseded", "cascade_blocked",
 })
 
 

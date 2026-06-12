@@ -103,15 +103,28 @@ def _observe_search(project: str | None, query: str, conn: sqlite3.Connection) -
     return result
 
 
-def _suggested_next_action(last_event_type: str | None, frontier: list[dict] | None = None, recommended: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
+def _suggested_next_action(project: str | None = None, last_event_type: str | None = None, frontier: list[dict] | None = None, recommended: str | None = None, conn: sqlite3.Connection | None = None, config: dict[str, Any] | None = None) -> dict:
+    if conn is not None and project:
+        health = _graph_health(project, conn)
+        calibration_rate = health["calibration_count"] / health["edge_count"] if health["edge_count"] > 0 else 0.0
+        if calibration_rate < 0.3 and health["edge_count"] > 3:
+            return {"tool": "tune", "reason": f"only {health['calibration_count']}/{health['edge_count']} edges calibrated"}
+        if health["orphan_count"] > 5:
+            return {"tool": "act", "reason": f"{health['orphan_count']} orphan states need exploration"}
+        if health.get("issues"):
+            for issue in health["issues"][:1]:
+                fix = issue.get("fix", {})
+                if fix:
+                    return {"tool": fix.get("tool", "plan"), "reason": issue["message"], "target": recommended}
+
     if last_event_type is None:
-        return {"tool": "plan", "reason": "project is empty — start by planning the first goal"}
+        return {"tool": "plan", "reason": "project is empty — start by planning"}
     hints = {
-        "acted": {"tool": "learn", "reason": "last action was executed, calibrate the edge with actual cost"},
-        "calibrated": {"tool": "observe", "reason": "edge was calibrated, refresh the frontier"},
-        "branched": {"tool": "act", "reason": "new options were created, traverse the frontier"},
-        "init": {"tool": "branch", "reason": "project was created, explore possible approaches"},
-        "compressed": {"tool": "observe", "reason": "events were archived, reassess the graph"},
+        "acted": {"tool": "recommend", "reason": "last action executed, find the next target"},
+        "calibrated": {"tool": "recommend", "reason": "edge calibrated, surface next candidate"},
+        "branched": {"tool": "act", "reason": "new options created, traverse the frontier"},
+        "init": {"tool": "branch", "reason": "project created, explore possible approaches"},
+        "compressed": {"tool": "reconstruct", "reason": "events archived, reassess the graph"},
     }
     result = dict(hints.get(last_event_type, {"tool": "plan", "reason": "assess the current state"}))
     if frontier and recommended:
@@ -242,7 +255,7 @@ def observe(project: str, query: str | None, scope: str, conn: sqlite3.Connectio
         "SELECT event_type FROM events WHERE project = ? ORDER BY created_at DESC LIMIT 1",
         (project,),
     ).fetchone()
-    suggested = _suggested_next_action(last_event["event_type"] if last_event else None, frontier, recommended, conn)
+    suggested = _suggested_next_action(project=project, last_event_type=last_event["event_type"] if last_event else None, frontier=frontier, recommended=recommended, conn=conn, config=config)
 
     return {
         "mode": "frontier", "states": [dict(s) for s in frontier],

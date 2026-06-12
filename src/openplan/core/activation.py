@@ -158,20 +158,42 @@ class ActivationContext:
         max_visits = max_row["max_visits"] if max_row and max_row["max_visits"] else 0
         return min(my_visits / max_visits, 1.0) if max_visits > 0 else 0.0
 
+    def _compute_novelty_ratio(self, state_id: str, conn: sqlite3.Connection) -> float:
+        out_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM edges WHERE source_id = ?", (state_id,)
+        ).fetchone()["cnt"]
+        return 1.0 / (out_count + 1)
+
     def _compute_activation(self, state_id: str, conn: sqlite3.Connection, config: dict[str, Any]) -> float:
-        weights = config.get("activation_weights", {})
+        import hashlib
+        weights = dict(config.get("activation_weights", {}))
+        w_row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'self_tuning:weight_config'"
+        ).fetchone()
+        if w_row:
+            try:
+                w_override = json.loads(w_row["value"])
+                if isinstance(w_override, dict):
+                    weights = w_override
+            except (json.JSONDecodeError, TypeError):
+                pass
         w_in = weights.get("in_degree", 0.35)
         w_frontier = weights.get("frontier", 0.25)
         w_recency = weights.get("recency", 0.2)
         w_boost = weights.get("boost", 0.1)
-        w_visit = weights.get("visit", 0.1)
+        w_visit = weights.get("visit", 0.0)
+        w_novelty = weights.get("novelty", 0.0)
         in_degree_ratio = self._compute_in_degree_ratio(state_id, conn)
         frontier_ratio = self._compute_frontier_ratio(state_id, conn, config)
         stale_days = config.get("stale_days", 2)
         recency = self._compute_recency(state_id, conn, stale_days)
         agent_boost = self._compute_agent_boost(state_id, conn)
         visit_ratio = self._compute_visit_ratio(state_id, conn)
-        return w_in * in_degree_ratio + w_frontier * frontier_ratio + w_recency * recency + w_boost * agent_boost + w_visit * visit_ratio
+        novelty = self._compute_novelty_ratio(state_id, conn)
+        raw = w_in * in_degree_ratio + w_frontier * frontier_ratio + w_recency * recency + w_boost * agent_boost + w_visit * visit_ratio + w_novelty * novelty
+        digest = hashlib.sha256(state_id.encode()).digest()[:4]
+        tiebreaker = int.from_bytes(digest, "big") / 1e16
+        return raw + tiebreaker
 
     def _precompute_targets(self, state_id: str, conn: sqlite3.Connection, config: dict[str, Any]) -> None:
         stack = [(state_id, 0)]
@@ -202,7 +224,7 @@ class ActivationContext:
                 threshold = config.get("activation_threshold", 0.5)
                 frontier = 1 if self._is_frontier(sid, act, conn, threshold) else 0
                 conn.execute(
-                    "UPDATE nodes SET activation = ?, frontier = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                    "UPDATE nodes SET activation = ?, frontier = ? WHERE id = ?",
                     (act, frontier, sid),
                 )
 
@@ -227,7 +249,7 @@ class ActivationContext:
                 self.dirty.discard(sid)
                 frontier = 1 if self._is_frontier(sid, act, conn, threshold) else 0
                 conn.execute(
-                    "UPDATE nodes SET activation = ?, frontier = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                    "UPDATE nodes SET activation = ?, frontier = ? WHERE id = ?",
                     (act, frontier, sid),
                 )
 
@@ -237,14 +259,6 @@ class ActivationContext:
                 self._recompute_all_dirty_locked(conn, config)
             if state_id not in self.cache:
                 self._precompute_targets(state_id, conn, config)
-                act = self._compute_activation(state_id, conn, config)
-                self.cache[state_id] = act
-                threshold = config.get("activation_threshold", 0.5)
-                frontier = 1 if self._is_frontier(state_id, act, conn, threshold) else 0
-                conn.execute(
-                    "UPDATE nodes SET activation = ?, frontier = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-                    (act, frontier, state_id),
-                )
             return self.cache[state_id]
 
     def reset(self) -> None:

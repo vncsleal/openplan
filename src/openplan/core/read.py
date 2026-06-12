@@ -65,12 +65,27 @@ def update_state(
 
     updated_fields = []
 
+    cascade_count = 0
     if status is not None:
         if status not in STATUS_VALUES:
             raise InvalidStatusError(status)
         conn.execute("UPDATE nodes SET status = ?, updated_at = ? WHERE id = ?",
                      (status, _now(), state_id))
         updated_fields.append("status")
+        if status == "blocked":
+            stack = [state_id]
+            while stack:
+                nid = stack.pop()
+                for child in conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (nid,)).fetchall():
+                    tid = child["target_id"]
+                    st = conn.execute("SELECT status FROM nodes WHERE id = ?", (tid,)).fetchone()
+                    if st and st["status"] not in ("done", "superseded", "blocked", "cascade_blocked"):
+                        conn.execute("UPDATE nodes SET status = 'cascade_blocked', updated_at = ? WHERE id = ?",
+                                     (_now(), tid))
+                        _record_event(conn, tid, node["project"], "blocked_cascade",
+                                      {"source": state_id, "blocked_by": state_id}, session_id)
+                        cascade_count += 1
+                        stack.append(tid)
 
     if props_patch:
         current_props = json.loads(node["props"]) if isinstance(node["props"], str) else node["props"]
@@ -93,6 +108,7 @@ def update_state(
         "ok": True,
         "state_id": state_id,
         "updated_fields": updated_fields,
+        "cascade_count": cascade_count,
     }
 
 
@@ -105,7 +121,7 @@ def reconstruct(
     config = config or {}
 
     root = conn.execute(
-        "SELECT id, label, goal FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        "SELECT id, label FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
         (project,),
     ).fetchone()
 
@@ -265,6 +281,43 @@ def reconstruct(
         n2.get("parent_id") == k for n2 in all_nodes
     )]
 
+    self_tuning_info = None
+    bandit_row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'self_tuning:bandit'"
+    ).fetchone()
+    if bandit_row:
+        try:
+            bd = json.loads(bandit_row["value"])
+            chosen = bd.get("chosen_arm")
+            arms = bd.get("arms", {})
+            if chosen and chosen in arms:
+                ab = arms[chosen]
+                alpha = ab.get("alpha", 1)
+                beta = ab.get("beta", 1)
+                total_trials = alpha + beta - 2
+                acceptance_rate = alpha / (alpha + beta)
+                if total_trials < 5:
+                    convergence = "low_data"
+                elif acceptance_rate > 0.65:
+                    convergence = "converging"
+                else:
+                    convergence = "exploring"
+                count_row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'self_tuning:act_count'"
+                ).fetchone()
+                act_count = json.loads(count_row["value"]) if count_row else 0
+                tune_interval = (config or {}).get("tune_interval", 10)
+                self_tuning_info = {
+                    "bandit_arm": chosen,
+                    "acceptance_rate": round(acceptance_rate, 3),
+                    "convergence": convergence,
+                    "total_trials": total_trials,
+                    "acts_since_tune": act_count,
+                    "tune_due": act_count >= tune_interval,
+                }
+        except (json.JSONDecodeError, TypeError, ZeroDivisionError):
+            pass
+
     return {
         "ok": True,
         "project": project,
@@ -277,6 +330,7 @@ def reconstruct(
         "blockers": blockers,
         "open_insights": open_insights[:10],
         "next_target": next_target,
+        "self_tuning": self_tuning_info,
         "project_health": {
             "pct_complete": pct_complete,
             "total_states": total,
@@ -290,6 +344,127 @@ def reconstruct(
                 calibration_count / edge_count, 4
             ) if edge_count > 0 else 0.0,
         },
+    }
+
+
+def compare_states(
+    state_a: str,
+    state_b: str,
+    conn: sqlite3.Connection,
+) -> dict[str, Any]:
+    raw_a = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_a,)).fetchone()
+    raw_b = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_b,)).fetchone()
+    if not raw_a:
+        raise InvalidStateError(state_a)
+    if not raw_b:
+        raise InvalidStateError(state_b)
+    node_a = dict(raw_a)
+    node_b = dict(raw_b)
+
+    def _extract_props(n: dict[str, Any]) -> dict[str, Any]:
+        raw = n.get("props", "{}")
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    props_a = _extract_props(node_a)
+    props_b = _extract_props(node_b)
+    all_keys = set(props_a.keys()) | set(props_b.keys())
+    only_in_a = {k: props_a[k] for k in all_keys if k in props_a and k not in props_b}
+    only_in_b = {k: props_b[k] for k in all_keys if k in props_b and k not in props_a}
+    changed = {k: {"a": props_a[k], "b": props_b[k]} for k in all_keys if k in props_a and k in props_b and props_a[k] != props_b[k]}
+    identical = {k: props_a[k] for k in all_keys if k in props_a and k in props_b and props_a[k] == props_b[k] and not isinstance(props_a[k], dict)}
+
+    edges_out_a = [dict(r) for r in conn.execute(
+        "SELECT target_id, action, cost_tokens, prob FROM edges WHERE source_id = ?", (state_a,)
+    ).fetchall()]
+    edges_out_b = [dict(r) for r in conn.execute(
+        "SELECT target_id, action, cost_tokens, prob FROM edges WHERE source_id = ?", (state_b,)
+    ).fetchall()]
+    edges_in_a = [dict(r) for r in conn.execute(
+        "SELECT source_id, action FROM edges WHERE target_id = ?", (state_a,)
+    ).fetchall()]
+    edges_in_b = [dict(r) for r in conn.execute(
+        "SELECT source_id, action FROM edges WHERE target_id = ?", (state_b,)
+    ).fetchall()]
+
+    out_targets_a = {e["target_id"] for e in edges_out_a}
+    out_targets_b = {e["target_id"] for e in edges_out_b}
+    in_sources_a = {e["source_id"] for e in edges_in_a}
+    in_sources_b = {e["source_id"] for e in edges_in_b}
+
+    event_count_a = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE node_id = ?", (state_a,)).fetchone()["cnt"]
+    event_count_b = conn.execute("SELECT COUNT(*) AS cnt FROM events WHERE node_id = ?", (state_b,)).fetchone()["cnt"]
+    recent_a = [dict(r) for r in conn.execute(
+        "SELECT event_type, created_at FROM events WHERE node_id = ? ORDER BY created_at DESC LIMIT 3", (state_a,)
+    ).fetchall()]
+    recent_b = [dict(r) for r in conn.execute(
+        "SELECT event_type, created_at FROM events WHERE node_id = ? ORDER BY created_at DESC LIMIT 3", (state_b,)
+    ).fetchall()]
+
+    embedding_similarity = None
+    try:
+        from openplan.core.embedding import get_cache, get_provider
+        if get_provider().loaded:
+            cache = get_cache()
+            emb_a = cache.get_embedding(state_a)
+            emb_b = cache.get_embedding(state_b)
+            if emb_a is not None and emb_b is not None:
+                import numpy as np
+                denom = np.linalg.norm(emb_a) * np.linalg.norm(emb_b)
+                if denom != 0:
+                    embedding_similarity = float(np.dot(emb_a, emb_b) / denom)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "state_a": {
+            "id": state_a,
+            "label": node_a["label"],
+            "project": node_a["project"],
+            "status": node_a.get("status", "pending"),
+            "activation": node_a["activation"],
+            "frontier": bool(node_a["frontier"]),
+            "event_count": event_count_a,
+            "recent_events": recent_a,
+        },
+        "state_b": {
+            "id": state_b,
+            "label": node_b["label"],
+            "project": node_b["project"],
+            "status": node_b.get("status", "pending"),
+            "activation": node_b["activation"],
+            "frontier": bool(node_b["frontier"]),
+            "event_count": event_count_b,
+            "recent_events": recent_b,
+        },
+        "props_diff": {
+            "only_in_a": only_in_a,
+            "only_in_b": only_in_b,
+            "changed": changed,
+            "identical": identical,
+        },
+        "status_diff": {
+            "a": node_a.get("status", "pending"),
+            "b": node_b.get("status", "pending"),
+            "same": node_a.get("status") == node_b.get("status"),
+        },
+        "activation_diff": {
+            "a": node_a["activation"],
+            "b": node_b["activation"],
+            "delta": round(node_a["activation"] - node_b["activation"], 6),
+        },
+        "edges_diff": {
+            "shared_out_targets": list(out_targets_a & out_targets_b),
+            "only_a_out_targets": list(out_targets_a - out_targets_b),
+            "only_b_out_targets": list(out_targets_b - out_targets_a),
+            "shared_in_sources": list(in_sources_a & in_sources_b),
+            "only_a_in_sources": list(in_sources_a - in_sources_b),
+            "only_b_in_sources": list(in_sources_b - in_sources_a),
+        },
+        "embedding_similarity": embedding_similarity,
     }
 
 
