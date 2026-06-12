@@ -24,29 +24,24 @@ from mcp.types import (
 )
 
 from openplan.config import load_config
-from openplan.core.analytics import compute_analytics, self_diagnose as _self_diagnose
+from openplan.core.analytics import compute_analytics
 from openplan.core.errors import OpenPlanError
-from openplan.core.export import compress as _compress
-from openplan.core.export import prune as _prune
-from openplan.core.graph import _graph_health, search as _search
+from openplan.core.graph import _graph_health
 from openplan.core.insight_propagation import propagate as _propagate
-from openplan.core.simulate import simulate as _simulate
 from openplan.core.learning import tune as _tune
-from openplan.core.tree import build_tree as _tree
 from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.planner import plan as _plan
-from openplan.core.read import compare_paths as _compare_paths
-from openplan.core.read import compare_states as _compare_states
-from openplan.core.read import optimize as _optimize
-from openplan.core.read import read_state as _read_state
 from openplan.core.read import reconstruct as _reconstruct
 from openplan.core.read import update_state as _update_state
-from openplan.core.reasoning import STATUS_VALUES, ReasoningPayload
 from openplan.core.recommend import recommend as _recommend
 from openplan.core.recommend import recommend_all as _recommend_all
 from openplan.core.state import act as _act
 from openplan.core.state import abandon as _abandon
 from openplan.core.state import init_project as _init
+from openplan.core.state import branch as _branch
+from openplan.core.export import prune as _prune
+from openplan.core.simulate import simulate as _simulate
+from openplan.core.tree import build_tree as _tree
 from openplan.core.telemetry import get_telemetry
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
@@ -229,47 +224,84 @@ async def _handle_act(args: dict) -> CallToolResult:
     _write_lock_acquire()
     need_notify = False
     auto_tuned = False
+    did_mutate = False
     try:
         conn = _get_conn()
+        action = args.get("action", "implement")
+        dry_run = args.get("dry_run", False)
+        status = args.get("status")
         source = _get_cursor(project)
         if not source:
             root = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
             source = root["id"] if root else None
         if not source:
             return err("NO_CURSOR", f"No position in {project} — call init first")
-        parent = args.get("parent")
-        if parent:
-            p_row = conn.execute("SELECT project FROM nodes WHERE id = ?", (parent,)).fetchone()
-            if not p_row:
-                return err("INVALID_PARENT", f"Parent state {parent} not found")
-            if p_row["project"] != project:
-                return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
-            source = parent
-        result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), actual_cost=args.get("actual_cost"), session_id=_SESSION_ID, postconditions=args.get("postconditions"))
-        need_notify = bool(result.get("next_state"))
-        if need_notify:
+
+        if action == "abandon":
+            target_id = args.get("target") or source
+            result = _abandon(target_id, conn, session_id=_SESSION_ID)
+            need_notify = True
+        elif action == "prune":
+            target_id = args.get("target") or source
+            result = _prune(target_id, conn, _config, summary_label=args.get("summary_label"), keep_events=args.get("keep_events", False), session_id=_SESSION_ID)
+            need_notify = bool(result.get("ok"))
+        elif action == "set_goal":
+            goal = args.get("target", "")
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                         (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})))
+            result = {"ok": True, "goal": goal}
+        elif args.get("options"):
+            result = _branch(source, args["options"], conn, _config, session_id=_SESSION_ID)
+            created = result.get("states_created", [])
+            if created:
+                _set_cursor(project, created[0])
+                result["next_state"] = created[0]
+            need_notify = True
+            did_mutate = True
+        elif status or args.get("props_patch"):
+            target_id = args.get("target") or source
+            result = _update_state(target_id, conn, status=status, props_patch=args.get("props_patch"), session_id=_SESSION_ID)
+            need_notify = True
+        elif dry_run:
+            from openplan.core.read import read_state as _read_state
+            target_id = args.get("target") or source
+            result = _read_state(target_id, conn)
+        else:
+            parent = args.get("parent")
+            if parent:
+                p_row = conn.execute("SELECT project FROM nodes WHERE id = ?", (parent,)).fetchone()
+                if not p_row:
+                    return err("INVALID_PARENT", f"Parent state {parent} not found")
+                if p_row["project"] != project:
+                    return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
+                source = parent
+            result = _act(source, action, conn, _config, target=args.get("target"),
+                         evidence=args.get("evidence"), thought=args.get("thought"),
+                         expected_cost=args.get("expected_cost"), actual_cost=args.get("actual_cost"),
+                         session_id=_SESSION_ID, postconditions=args.get("postconditions"))
+            need_notify = bool(result.get("next_state"))
+            did_mutate = True
+        if need_notify and result.get("next_state"):
             _set_cursor(project, result["next_state"])
-        tune_interval = _config.get("tune_interval", 10)
-        if tune_interval > 0:
-            count_row = _conn.execute(
-                "SELECT value FROM meta WHERE key = 'self_tuning:act_count'"
-            ).fetchone()
-            count = json.loads(count_row["value"]) if count_row else 0
-            count += 1
-            if count >= tune_interval:
-                from openplan.core.learning import tune as _auto_tune
-                _auto_tune(conn, _config)
-                count = 0
-                auto_tuned = True
-            _conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('self_tuning:act_count', ?)",
-                (json.dumps(count),),
-            )
+        elif need_notify and result.get("state_id"):
+            _set_cursor(project, result["state_id"])
+        if did_mutate:
+            tune_interval = _config.get("tune_interval", 10)
+            if tune_interval > 0:
+                count_row = _conn.execute("SELECT value FROM meta WHERE key = 'self_tuning:act_count'").fetchone()
+                count = json.loads(count_row["value"]) if count_row else 0
+                count += 1
+                if count >= tune_interval:
+                    _tune(conn, _config)
+                    count = 0
+                    auto_tuned = True
+                _conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('self_tuning:act_count', ?)", (json.dumps(count),))
     finally:
         _write_lock_release()
     if need_notify:
         await _push_resource_notification(project)
-    result["auto_tuned"] = auto_tuned
+    if auto_tuned:
+        result["auto_tuned"] = True
     return ok(result, project=project)
 
 
@@ -280,267 +312,136 @@ async def _handle_recommend(args: dict) -> CallToolResult:
         project = args.get("project")
         if not project or project == "*":
             results = _recommend_all(conn, _config, goal=args.get("goal"), max_cost=args.get("max_cost"))
-            projects = [dict(r) for r in conn.execute(
+            projects_data = [dict(r) for r in conn.execute(
                 "SELECT n.project, MIN(n.id) AS root_id, COUNT(DISTINCT n2.id) AS state_count "
                 "FROM nodes n LEFT JOIN nodes n2 ON n2.project = n.project "
                 "GROUP BY n.project ORDER BY state_count DESC"
             ).fetchall()]
-            return ok({"results": results, "count": len(results), "projects": projects})
+            return ok({"results": results, "count": len(results), "projects": projects_data})
+
         cursor = args.get("cursor") or _get_cursor(project)
-        result = _recommend(project, conn, _config, goal=args.get("goal"), max_cost=args.get("max_cost"), cursor=cursor)
-        return ok(result, project=project)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_search(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        conn = _get_conn()
+        sequence = args.get("sequence")
+        target = args.get("target")
         query = args.get("query")
-        project = args.get("project")
-        if not query:
-            if project:
-                projects_data = [dict(r) for r in conn.execute(
-                    "SELECT n.project, MIN(n.id) AS root_id, "
-                    "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
-                    "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
-                    "LEFT JOIN nodes n2 ON n2.project = n.project "
-                    "WHERE n.project = ? "
-                    "GROUP BY n.project",
-                    (project,),
-                ).fetchall()]
-            else:
-                projects_data = [dict(r) for r in conn.execute(
-                    "SELECT n.project, MIN(n.id) AS root_id, "
-                    "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
-                    "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
-                    "LEFT JOIN nodes n2 ON n2.project = n.project "
-                    "GROUP BY n.project ORDER BY state_count DESC"
-                ).fetchall()]
-            conv = _telemetry.get_global_conversion_rate()
-            result: dict[str, Any] = {"query": None, "projects": projects_data, "count": len(projects_data)}
-            if conv is not None:
-                result["telemetry"] = {"global_conversion_rate": conv}
-            return ok(result)
-        limit = args.get("limit", 20)
-        result = _search(query, conn, project=project, limit=limit)
-        return ok(result)
-    finally:
-        _read_lock_release()
+        top_k = args.get("top_k")
+        up_depth = args.get("up_depth")
+        risk_adjustment = args.get("risk_adjustment")
+        max_cost = args.get("max_cost")
+        tree_format = args.get("format", "json")
 
+        result: dict[str, Any] = {"ok": True}
 
-async def _handle_read_state(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        result = _read_state(args["state_id"], _get_conn())
-        return ok(result)
-    finally:
-        _read_lock_release()
+        if query:
+            from openplan.core.graph import search as _search
+            sr = _search(query, conn, project=project, limit=top_k or 20)
+            result.update(sr)
+        elif sequence:
+            sim_result = _simulate(project, sequence, conn, _config, cursor=cursor)
+            result.update(sim_result)
+            if sim_result.get("total_cost") is not None:
+                result["expected_cost"] = {
+                    "tokens": sim_result["total_cost"],
+                    "prob": sim_result.get("cumulative_prob", 1.0),
+                    "steps": sim_result.get("steps", 0),
+                }
+        elif target:
+            constraints: dict[str, Any] = {}
+            if top_k:
+                constraints["top_k"] = top_k
+            if risk_adjustment:
+                constraints["risk_adjustment"] = risk_adjustment
+            if max_cost:
+                constraints["max_cost"] = max_cost
+            plan_result = _plan(cursor, target, conn, _config, constraints=constraints or None, session_id=_SESSION_ID)
+            result.update(plan_result)
+        else:
+            rec_result = _recommend(project, conn, _config, goal=args.get("goal"), max_cost=max_cost, cursor=cursor)
+            result.update(rec_result)
+            if top_k and rec_result.get("target"):
+                try:
+                    from openplan.core.read import compare_paths as _compare_paths
+                    cp = _compare_paths(project, conn, [rec_result["target"]], config=_config, cursor=cursor)
+                    if cp.get("results"):
+                        result["alternatives"] = cp["results"]
+                except Exception:
+                    pass
 
+        health = _graph_health(project, conn)
+        result["project_health"] = {
+            "total_states": health["state_count"],
+            "edge_count": health["edge_count"],
+            "max_depth": health["max_depth"],
+            "orphan_count": health["orphan_count"],
+            "calibration_count": health["calibration_count"],
+            "completed": conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'", (project,)).fetchone()["cnt"],
+            "calibration_rate": round(health["calibration_count"] / health["edge_count"], 4) if health["edge_count"] > 0 else 0.0,
+        }
+        result["blockers"] = [dict(r) for r in conn.execute(
+            "SELECT id, label, status FROM nodes WHERE project = ? AND status IN ('blocked', 'cascade_blocked')",
+            (project,),
+        ).fetchall()]
 
-async def _handle_update_state(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    notif_project: str | None = None
-    try:
-        result = _update_state(
-            args["state_id"], _get_conn(),
-            status=args.get("status"),
-            props_patch=args.get("props_patch"),
-            session_id=_SESSION_ID,
-        )
-        if result.get("state_id"):
-            row = _conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
-            if row:
-                notif_project = row["project"]
-        return ok(result)
-    finally:
-        _write_lock_release()
-    if notif_project:
-        await _push_resource_notification(notif_project)
+        goal_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
+        if goal_row:
+            try:
+                result["goal"] = json.loads(goal_row["value"])
+            except (json.JSONDecodeError, TypeError):
+                pass
 
+        bandit_row = conn.execute("SELECT value FROM meta WHERE key = 'self_tuning:bandit'").fetchone()
+        if bandit_row:
+            try:
+                bd = json.loads(bandit_row["value"])
+                chosen = bd.get("chosen_arm")
+                arms = bd.get("arms", {})
+                if chosen and chosen in arms:
+                    ab = arms[chosen]
+                    alpha = ab.get("alpha", 1)
+                    beta = ab.get("beta", 1)
+                    tri = alpha + beta - 2
+                    ar = alpha / (alpha + beta)
+                    cv = "low_data" if tri < 5 else ("converging" if ar > 0.65 else "exploring")
+                    cr = conn.execute("SELECT value FROM meta WHERE key='self_tuning:act_count'").fetchone()
+                    ac = json.loads(cr["value"]) if cr else 0
+                    ti = _config.get("tune_interval", 10)
+                    result["self_tuning"] = {
+                        "bandit_arm": chosen, "acceptance_rate": round(ar, 3),
+                        "convergence": cv, "total_trials": tri,
+                        "acts_since_tune": ac, "tune_due": ac >= ti,
+                    }
+            except (json.JSONDecodeError, TypeError, ZeroDivisionError):
+                pass
 
-async def _handle_reconstruct(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        project = args["project"]
-        cursor = _get_cursor(project)
-        result = _reconstruct(project, _get_conn(), cursor=cursor, config=_config)
-        return ok(result, project=project)
-    finally:
-        _read_lock_release()
+        est_acc: dict[str, dict[str, float]] = {}
+        for r in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'tuning:%'"):
+            action = r["key"][7:]
+            try:
+                td = json.loads(r["value"])
+                if td.get("count", 0) > 1 and td.get("avg_cost", 0) > 0:
+                    cv_raw = td.get("cost_stddev", 0)
+                    est_acc[action] = {
+                        "avg_cost": td["avg_cost"], "stddev": cv_raw,
+                        "samples": td["count"], "ci": td.get("cost_ci_95"),
+                    }
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result["estimation_accuracy"] = est_acc
 
+        if query:
+            pass
+        elif target or (up_depth is not None and up_depth >= 0):
+            tree_target = cursor if not target else target
+            try:
+                tr = _tree(state_id=tree_target, project=project if not tree_target else None,
+                          conn=conn, depth=3, up_depth=up_depth or 0, fmt=tree_format)
+                result["tree"] = tr.get("tree")
+                result["tree_format"] = tree_format
+            except Exception:
+                pass
 
-async def _handle_plan(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        project = args["project"]
-        cursor = _get_cursor(project)
-        if not cursor:
-            return err("NO_CURSOR", f"No position in {project} — call init first")
-        target = args["target"]
-        constraints = args.get("constraints")
-        result = _plan(cursor, target, _get_conn(), _config, constraints=constraints, session_id=_SESSION_ID)
-        return ok(result)
-    finally:
-        _read_lock_release()
+        if not sequence and not target and not query and not cursor:
+            result["cursor"] = cursor
 
-
-async def _handle_compare_paths(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        project = args["project"]
-        cursor = _get_cursor(project)
-        result = _compare_paths(project, _get_conn(), args["targets"], config=_config, cursor=cursor)
-        return ok(result, project=project)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_optimize(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        project = args["project"]
-        cursor = _get_cursor(project)
-        result = _optimize(project, _get_conn(), config=_config, cursor=cursor)
-        return ok(result, project=project)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_tune(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        result = _tune(_get_conn(), _config)
-        return ok(result)
-    finally:
-        _write_lock_release()
-
-
-async def _handle_set_goal(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        project = args["project"]
-        conn = _get_conn()
-        row = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
-        if not row:
-            return err("NO_PROJECT", f"Project {project} not found — call init first")
-        goal = args.get("goal", "")
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            (f"goal:{project}", json.dumps({"text": goal, "target_state_id": args.get("target_state_id")})),
-        )
-        conn.commit()
-        return ok({"ok": True, "project": project, "goal": goal})
-    finally:
-        _write_lock_release()
-
-
-async def _handle_abandon(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    notif_project: str | None = None
-    try:
-        conn = _get_conn()
-        result = _abandon(args["state_id"], conn, session_id=_SESSION_ID)
-        row = conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
-        if row:
-            notif_project = row["project"]
-        return ok(result)
-    finally:
-        _write_lock_release()
-    if notif_project:
-        await _push_resource_notification(notif_project)
-
-
-async def _handle_diagnose(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        conn = _get_conn()
-        result = _self_diagnose(conn)
-        return ok(result)
-    finally:
-        _write_lock_release()
-
-
-async def _handle_tree(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        conn = _get_conn()
-        result = _tree(
-            state_id=args.get("state_id"),
-            project=args.get("project"),
-            conn=conn,
-            depth=args.get("depth", 3),
-            up_depth=args.get("up_depth", 0),
-            include_activation=args.get("include_activation", True),
-            include_status=args.get("include_status", True),
-            include_edges=args.get("include_edges", False),
-            fmt=args.get("format", "json"),
-        )
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_compress(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    try:
-        conn = _get_conn()
-        project = args["project"]
-        result = _compress(
-            project, conn, _config,
-            older_than_days=args.get("older_than_days", 30),
-            merge_orphans=args.get("merge_orphans", True),
-            session_id=_SESSION_ID,
-        )
-        return ok(result, project=project)
-    finally:
-        _write_lock_release()
-
-
-async def _handle_prune(args: dict) -> CallToolResult:
-    _write_lock_acquire()
-    notif_project: str | None = None
-    try:
-        conn = _get_conn()
-        result = _prune(
-            args["state_id"], conn, _config,
-            summary_label=args.get("summary_label"),
-            keep_events=args.get("keep_events", False),
-            session_id=_SESSION_ID,
-        )
-        if result.get("ok"):
-            row = conn.execute("SELECT project FROM nodes WHERE id = ?", (result["state_id"],)).fetchone()
-            if row:
-                notif_project = row["project"]
-        return ok(result)
-    finally:
-        _write_lock_release()
-    if notif_project:
-        await _push_resource_notification(notif_project)
-
-
-async def _handle_compare_states(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        conn = _get_conn()
-        result = _compare_states(
-            args["state_a"],
-            args["state_b"],
-            conn,
-        )
-        return ok(result)
-    finally:
-        _read_lock_release()
-
-
-async def _handle_simulate(args: dict) -> CallToolResult:
-    _read_lock_acquire()
-    try:
-        conn = _get_conn()
-        project = args["project"]
-        cursor = args.get("cursor") or _get_cursor(project)
-        result = _simulate(project, args["sequence"], conn, _config, cursor=cursor)
         return ok(result, project=project)
     finally:
         _read_lock_release()
@@ -550,22 +451,6 @@ HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
     "recommend": _handle_recommend,
-    "search": _handle_search,
-    "read_state": _handle_read_state,
-    "update_state": _handle_update_state,
-    "reconstruct": _handle_reconstruct,
-    "plan": _handle_plan,
-    "compare_paths": _handle_compare_paths,
-    "optimize": _handle_optimize,
-    "tune": _handle_tune,
-    "set_goal": _handle_set_goal,
-    "abandon": _handle_abandon,
-    "diagnose": _handle_diagnose,
-    "tree": _handle_tree,
-    "compress": _handle_compress,
-    "prune": _handle_prune,
-    "compare_states": _handle_compare_states,
-    "simulate": _handle_simulate,
 }
 
 
