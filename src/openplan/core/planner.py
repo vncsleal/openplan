@@ -29,12 +29,13 @@ def _get_edge_cost(edge_data: dict[str, Any], config: dict[str, Any]) -> float:
     except (json.JSONDecodeError, TypeError):
         weight_history = []
 
+    real_entries = [wh for wh in weight_history if not wh.get("auto")]
     learn_cfg = config.get("learning", {})
     smoothing = learn_cfg.get("smoothing_factor", 0.3)
     min_acts = learn_cfg.get("min_acts_for_calibration", 1)
 
-    if len(weight_history) >= min_acts:
-        actual_costs = [_actual_tokens(wh) for wh in weight_history]
+    if len(real_entries) >= min_acts:
+        actual_costs = [_actual_tokens(wh) for wh in real_entries]
         actual_avg = sum(actual_costs) / len(actual_costs)
         learned = smoothing * actual_avg + (1 - smoothing) * raw_cost
     else:
@@ -96,20 +97,17 @@ def plan(
         if _get_emb_provider().loaded:
             emb_cache = _get_emb_cache()
             emb_cache.refresh(conn)
-            if emb_cache._matrix is not None and resolved_state in emb_cache._index:
-                tgt_idx = emb_cache._index[resolved_state]
-                target_emb = emb_cache._matrix[tgt_idx].copy()
-                embedding_cache = emb_cache
+            target_emb = emb_cache.get_embedding(resolved_state) if resolved_state else None
+            embedding_cache = emb_cache
     except Exception:
         pass
 
     def _heuristic(sid: str) -> float:
         if target_emb is None or embedding_cache is None:
             return 0.0
-        idx = embedding_cache._index.get(sid)
-        if idx is None:
+        state_emb = embedding_cache.get_embedding(sid)
+        if state_emb is None:
             return 0.0
-        state_emb = embedding_cache._matrix[idx]
         denom = np.linalg.norm(state_emb) * np.linalg.norm(target_emb)
         if denom == 0:
             return 0.0

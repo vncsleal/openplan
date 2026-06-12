@@ -106,7 +106,7 @@ class ActivationContext:
             return 0.0
         now = datetime.now(timezone.utc)
         if updated_dt.tzinfo is None:
-            now = datetime.now()
+            updated_dt = updated_dt.replace(tzinfo=timezone.utc)
         delta = now - updated_dt
         days = delta.total_seconds() / 86400.0
         return 1.0 - min(days / stale_days, 1.0)
@@ -128,7 +128,7 @@ class ActivationContext:
                     bt = datetime.fromisoformat(boosted_at)
                     now = datetime.now(timezone.utc)
                     if bt.tzinfo is None:
-                        now = datetime.now()
+                        bt = bt.replace(tzinfo=timezone.utc)
                     hours = (now - bt).total_seconds() / 3600.0
                     if hours > 24:
                         return 0.5

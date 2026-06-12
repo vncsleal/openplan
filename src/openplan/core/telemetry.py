@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import sqlite3
 import threading
 from collections import Counter, deque
 from typing import Any
+
+_log = logging.getLogger("openplan.telemetry")
 
 
 class TelemetryTracker:
@@ -130,9 +134,9 @@ class TelemetryTracker:
                 if total == 0:
                     continue
                 for tool, rec in hits.items():
-                    import hashlib
-                    eid = abs(hash(f"telemetry_{sid}_{tool}")) % 1000000
-                    ikey = hashlib.sha256(f"telemetry:{sid}:{tool}".encode()).hexdigest()[:32]
+                    digest = hashlib.sha256(f"telemetry:{sid}:{tool}".encode()).hexdigest()
+                    eid = int(digest[:12], 16) % 1000000
+                    ikey = digest[:32]
                     self._conn.execute(
                         "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
                         "VALUES (?, '__telemetry__', '__telemetry__', 'telemetry', ?, 1, ?, '', ?)",
@@ -155,7 +159,7 @@ class TelemetryTracker:
                         self._suggestion_hits[sid] = {}
                     self._suggestion_hits[sid][payload["tool"]] = {"followed": payload["followed"], "ignored": payload["ignored"]}
             except Exception:
-                pass
+                _log.exception("Failed to reload telemetry from events")
 
 
 _telemetry = TelemetryTracker()

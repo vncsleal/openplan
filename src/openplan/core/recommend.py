@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
+
+_log = logging.getLogger("openplan.recommend")
 
 from openplan.core.errors import NoPathError
 from openplan.core.graph import _graph_health, _score_state
@@ -95,7 +98,7 @@ def recommend(
         try:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('recommend_weights', ?)", (json.dumps(rw),))
         except Exception:
-            pass
+            _log.exception("Failed to save recommend weights")
 
     scored = []
     for r in node_rows:
@@ -152,6 +155,7 @@ def recommend(
         except NoPathError:
             continue
         except Exception:
+            _log.exception("Plan failed for %s", nid)
             continue
 
     health = _graph_health(project, conn)
@@ -210,6 +214,7 @@ def recommend_all(conn: sqlite3.Connection, config: dict[str, Any], goal: str | 
             if result.get("target"):
                 results.append({"project": p["project"], **result})
         except Exception:
+            _log.exception("Recommend_all failed for %s", p["project"])
             continue
     results.sort(key=lambda r: r.get("cost", 0) if r.get("cost") else float("inf"))
     return results[:10]

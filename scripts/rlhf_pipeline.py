@@ -22,11 +22,11 @@ import sqlite3
 import urllib.request
 import urllib.error
 
-from openplan.core.rlhf import build_rlhf_dataset
+from openplan.core.rlhf import _discover_password, build_rlhf_dataset
 
 
 def _get_password(args_password: str | None) -> str | None:
-    return args_password or os.environ.get("OPENCODE_SERVER_PASSWORD") or None
+    return args_password or _discover_password() or os.environ.get("OPENCODE_SERVER_PASSWORD") or None
 
 
 def _dry_run(db_path: str, opencode_url: str, opencode_endpoint: str, password: str | None) -> None:
@@ -66,6 +66,7 @@ def _dry_run(db_path: str, opencode_url: str, opencode_endpoint: str, password: 
 
     print()
     print("Testing opencode API connection...")
+    print(f"  Password: {'detected' if password else 'not set — try --opencode-password or set OPENCODE_SERVER_PASSWORD'}")
     try:
         req = urllib.request.Request(f"{opencode_url.rstrip('/')}/global/health", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:

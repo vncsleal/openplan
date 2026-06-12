@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import math
 import sqlite3
 import string
 from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any
+
+_log = logging.getLogger("openplan.graph")
 
 from openplan.core.activation import recompute_all_dirty
 
@@ -54,7 +58,7 @@ def _observe_search(project: str | None, query: str, conn: sqlite3.Connection) -
             if emb_results:
                 return {"mode": "similarity", "method": "embedding", "query": query, "states": emb_results, "count": len(emb_results)}
     except Exception:
-        pass
+        _log.exception("Embedding search failed, falling back to FTS/LIKE")
     states: list[dict[str, Any]] = []
     if project:
         try:
@@ -64,6 +68,7 @@ def _observe_search(project: str | None, query: str, conn: sqlite3.Connection) -
                 (project, query),
             ).fetchall()
         except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            _log.warning("FTS5 search failed, falling back to LIKE")
             like = f"%{query}%"
             rows = conn.execute(
                 "SELECT * FROM nodes WHERE project = ? AND (label LIKE ? OR project LIKE ?)",
@@ -344,30 +349,35 @@ def _graph_health(project: str, conn: sqlite3.Connection) -> dict[str, Any]:
             "severity": "high" if orphan_count > 10 else "medium",
             "message": f"{orphan_count} states have no outgoing edges and are never acted upon",
             "fix": {"tool": "branch", "action": "implement"},
+            "notify": state_count > 5,
         })
     if len(actions_used) == 0:
         issues.append({
             "code": "EMPTY_GRAPH", "severity": "high",
             "message": "No edges exist",
             "fix": {"tool": "branch", "action": "implement"},
+            "notify": True,
         })
     elif len(actions_used) <= 1:
         issues.append({
             "code": "LOW_ACTION_DIVERSITY", "severity": "medium",
             "message": f"Only 1 action type used ({actions_used[0]['action']})",
             "fix": {"tool": "branch", "action": "research"},
+            "notify": state_count > 5,
         })
     if calibration_count == 0 and edge_count > 0:
         issues.append({
             "code": "NO_CALIBRATION", "severity": "high",
             "message": "No edges have been calibrated",
             "fix": {"tool": "learn", "action": "implement"},
+            "notify": state_count > 5,
         })
     if max_depth <= 1 and state_count > 3:
         issues.append({
             "code": "SHALLOW_GRAPH", "severity": "medium",
             "message": f"Graph depth is {max_depth}",
             "fix": {"tool": "branch", "action": "implement"},
+            "notify": state_count > 5,
         })
 
     return {
@@ -388,32 +398,32 @@ def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] |
     calibration_rate = h["calibration_count"] / h["edge_count"] if h["edge_count"] > 0 else 0.0
     fixes_applied = 0
 
-    if auto_fix:
+    root = conn.execute(
+        "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        (project,),
+    ).fetchone()
+    if auto_fix and root:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         for issue in h["issues"]:
             if issue["code"] == "HIGH_ORPHAN_COUNT" and fixes_applied < 10:
                 for orphan in h["orphans"][:5]:
+                    if orphan["id"] == root["id"]:
+                        continue
                     conn.execute(
                         "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, 'implement', 0.5, ?, ?)",
-                        (orphan["id"], orphan["id"], now, now),
+                        (orphan["id"], root["id"], now, now),
                     )
                     fixes_applied += 1
-        if fixes_applied:
-            root_node = conn.execute(
-                "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
-                (project,),
-            ).fetchone()
-            if root_node:
-                eid = conn.execute("SELECT COALESCE(MAX(CAST(SUBSTR(id, 3) AS INTEGER)), 0) + 1 FROM events").fetchone()[0]
-                import hashlib
-                ikey = hashlib.sha256(f"{root_node['id']}:auto_fix".encode()).hexdigest()[:32]
-                conn.execute(
-                    "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, 1, ?, '', ?)",
-                    (f"E-{eid:06d}", project, root_node["id"], "auto_fix",
-                     json.dumps({"fixes_applied": fixes_applied, "issue_codes": [i["code"] for i in h["issues"]]}),
-                     ikey, now),
-                )
+        if fixes_applied and root:
+            eid = conn.execute("SELECT COALESCE(MAX(CAST(SUBSTR(id, 3) AS INTEGER)), 0) + 1 FROM events").fetchone()[0]
+            ikey = hashlib.sha256(f"{root['id']}:auto_fix".encode()).hexdigest()[:32]
+            conn.execute(
+                "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, '', ?)",
+                (f"E-{eid:06d}", project, root["id"], "auto_fix",
+                 json.dumps({"fixes_applied": fixes_applied, "issue_codes": [i["code"] for i in h["issues"]]}),
+                 ikey, now),
+            )
 
     result: dict[str, Any] = {
         "project": project,
@@ -455,7 +465,7 @@ def _token_score(query_tokens: list[str], text_token_set: set[str]) -> float:
     return matches / len(query_tokens)
 
 
-def search(query: str, conn: sqlite3.Connection, project: str | None = None) -> dict[str, Any]:
+def search(query: str, conn: sqlite3.Connection, project: str | None = None, limit: int = 20) -> dict[str, Any]:
     if project:
         projects = [dict(r) for r in conn.execute(
             "SELECT n.project, MIN(n.id) AS root_id, n.label, COUNT(DISTINCT e.id) AS events "
@@ -494,7 +504,7 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None) -> 
 
     scored.sort(key=lambda x: (-x[0], -x[1]))
     matched_states = []
-    for score, activation, node, matched in scored[:20]:
+    for score, activation, node, matched in scored[:limit]:
         entry = {"id": node["id"], "label": node["label"], "project": node["project"], "activation": activation}
         if matched:
             entry["matched_tokens"] = matched
@@ -504,13 +514,13 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None) -> 
         like_q = f"%{query}%"
         if project:
             rows = conn.execute(
-                "SELECT id, label, project, activation FROM nodes WHERE project = ? AND label LIKE ? ORDER BY activation DESC LIMIT 20",
-                (project, like_q),
+                "SELECT id, label, project, activation FROM nodes WHERE project = ? AND label LIKE ? ORDER BY activation DESC LIMIT ?",
+                (project, like_q, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
-                (like_q,),
+                "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT ?",
+                (like_q, limit),
             ).fetchall()
         matched_states = [dict(r) for r in rows]
 
@@ -519,30 +529,25 @@ def search(query: str, conn: sqlite3.Connection, project: str | None = None) -> 
     if project:
         edge_query += " WHERE n.project = ?"
         edge_params = (project,)
+    edge_query += " ORDER BY e.updated_at DESC LIMIT 1000"
 
-    insights = []
-    if query_tokens:
-        for r in conn.execute(edge_query, edge_params).fetchall():
+    def _match_insights(rows, match_fn) -> list[dict]:
+        results = []
+        for r in rows:
             try:
                 wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
                 for entry in wh:
                     text = entry.get("insight", "")
-                    insight_tokens = _tokenize(text)
-                    if _token_score(query_tokens, set(insight_tokens)) > 0:
-                        insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
+                    if text and match_fn(text):
+                        results.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
             except (json.JSONDecodeError, TypeError):
                 pass
+        return results
+
+    insights = _match_insights(conn.execute(edge_query, edge_params).fetchall(), lambda t: _token_score(query_tokens, set(_tokenize(t))) > 0)
 
     if not insights:
-        for r in conn.execute(edge_query, edge_params).fetchall():
-            try:
-                wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
-                for entry in wh:
-                    text = entry.get("insight", "")
-                    if query.lower() in text.lower():
-                        insights.append({"source": "insight", "text": text, "from_state": r["source_id"], "to_state": r["target_id"], "project": r["project"]})
-            except (json.JSONDecodeError, TypeError):
-                pass
+        insights = _match_insights(conn.execute(edge_query, edge_params).fetchall(), lambda t: query.lower() in t.lower())
 
     result: dict[str, Any] = {"query": query, "projects": projects, "count": len(projects), "states": matched_states}
     if insights:

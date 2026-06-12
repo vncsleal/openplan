@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from typing import Any
 
@@ -46,6 +47,8 @@ _read_lock = threading.Lock()
 _read_count = 0
 _notification_queue: list[dict[str, Any]] = []
 _notification_seen: set[str] = set()
+_notification_lock = threading.Lock()
+_maintenance_stop = threading.Event()
 _telemetry = get_telemetry()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
 if not _SESSION_ID:
@@ -117,19 +120,20 @@ def _notif_hash(n: dict) -> str:
 
 
 def _get_fresh_notifications(project: str | None = None) -> list[dict]:
-    fresh = []
-    remaining = []
-    for n in list(_notification_queue):
-        h = _notif_hash(n)
-        if h in _notification_seen:
-            continue
-        if project and n.get("project") and n["project"] != project:
-            remaining.append(n)
-        else:
-            fresh.append(n)
-            _notification_seen.add(h)
-    _notification_queue.clear()
-    _notification_queue.extend(remaining)
+    with _notification_lock:
+        fresh = []
+        remaining = []
+        for n in list(_notification_queue):
+            h = _notif_hash(n)
+            if h in _notification_seen:
+                continue
+            if project and n.get("project") and n["project"] != project:
+                remaining.append(n)
+            else:
+                fresh.append(n)
+                _notification_seen.add(h)
+        _notification_queue.clear()
+        _notification_queue.extend(remaining)
     return fresh
 
 
@@ -170,28 +174,31 @@ async def _push_resource_notification(project: str) -> None:
                 )
             )
         )
+        _log.info("Sent resource update notification for %s", project)
     except Exception:
         _log.warning("Failed to send resource update notification for %s", project)
 
 
 async def _handle_init(args: dict) -> CallToolResult:
     _write_lock_acquire()
+    project = args["project"]
     try:
-        project = args["project"]
         result = _init(project, args.get("label"), _get_conn(), session_id=_SESSION_ID)
         if result.get("state_id"):
             _set_cursor(project, result["state_id"])
-            await _push_resource_notification(project)
-        return ok(result, project=project)
     finally:
         _write_lock_release()
+    if result.get("state_id"):
+        await _push_resource_notification(project)
+    return ok(result, project=project)
 
 
 async def _handle_act(args: dict) -> CallToolResult:
+    project = args["project"]
     _write_lock_acquire()
+    need_notify = False
     try:
         conn = _get_conn()
-        project = args["project"]
         source = _get_cursor(project)
         if not source:
             root = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
@@ -207,12 +214,14 @@ async def _handle_act(args: dict) -> CallToolResult:
                 return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
             source = parent
         result = _act(source, args["action"], conn, _config, target=args.get("target"), evidence=args.get("evidence"), thought=args.get("thought"), expected_cost=args.get("expected_cost"), session_id=_SESSION_ID)
-        if result.get("next_state"):
+        need_notify = bool(result.get("next_state"))
+        if need_notify:
             _set_cursor(project, result["next_state"])
-            await _push_resource_notification(project)
-        return ok(result, project=project)
     finally:
         _write_lock_release()
+    if need_notify:
+        await _push_resource_notification(project)
+    return ok(result, project=project)
 
 
 async def _handle_recommend(args: dict) -> CallToolResult:
@@ -265,7 +274,8 @@ async def _handle_search(args: dict) -> CallToolResult:
             if conv is not None:
                 result["telemetry"] = {"global_conversion_rate": conv}
             return ok(result)
-        result = _search(query, conn, project=project)
+        limit = args.get("limit", 20)
+        result = _search(query, conn, project=project, limit=limit)
         return ok(result)
     finally:
         _read_lock_release()
@@ -364,7 +374,8 @@ Start with init if it doesn't exist, then act to create work items, recommend to
 
 
 def _shutdown() -> None:
-    global _conn
+    global _conn, _maintenance_stop
+    _maintenance_stop.set()
     _telemetry.flush_to_events()
     if _conn is not None:
         _conn.close()
@@ -382,12 +393,17 @@ async def main() -> None:
     atexit.register(_shutdown)
 
     notifs = _maintenance_cycle(_conn, _config, _write_lock)
-    _notification_queue.extend(notifs)
-    _propagate(_conn, _config)
+    with _notification_lock:
+        _notification_queue.extend(notifs)
+    _write_lock_acquire()
+    try:
+        _propagate(_conn, _config)
+    finally:
+        _write_lock_release()
 
     maintenance_thread = threading.Thread(
         target=_maintenance_loop,
-        args=(_conn, _config, _write_lock, _notification_queue),
+        args=(_conn, _config, _write_lock, _notification_queue, _notification_lock, _maintenance_stop),
         daemon=True,
     )
     maintenance_thread.start()
@@ -421,14 +437,20 @@ async def main() -> None:
         )
 
 
-def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue: list) -> None:
+def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue: list, queue_lock: threading.Lock, stop_event: threading.Event) -> None:
     interval = config.get("maintenance_interval_minutes", 5) * 60.0
-    while True:
-        import time
-        time.sleep(interval)
+    while not stop_event.is_set():
+        if stop_event.wait(interval):
+            break
         notifs = _maintenance_cycle(conn, config, write_lock)
-        _propagate(conn, config)
-        queue.extend(notifs)
+        if not write_lock.acquire(timeout=2.0):
+            continue
+        try:
+            _propagate(conn, config)
+        finally:
+            write_lock.release()
+        with queue_lock:
+            queue.extend(notifs)
 
 
 if __name__ == "__main__":

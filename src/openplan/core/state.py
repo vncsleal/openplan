@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+
+_log = logging.getLogger("openplan.state")
 
 from openplan.core.activation import get_activation, increment_max_in_degree, mark_dirty
 from openplan.core.errors import (
@@ -67,22 +71,26 @@ def _ensure_node(project: str, label: str, conn: sqlite3.Connection) -> str:
 
 
 def _safe_savepoint(conn: sqlite3.Connection, name: str) -> bool:
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        _log.warning("Invalid savepoint name: %s", name)
+        return False
     try:
-        conn.execute(f"SAVEPOINT {name}")
+        conn.execute(f'SAVEPOINT "{name}"')
         return True
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
+        _log.warning("Savepoint %s failed: %s", name, e)
         return False
 
 
 def _safe_release(conn: sqlite3.Connection, name: str, owned: bool) -> None:
     if owned:
-        conn.execute(f"RELEASE SAVEPOINT {name}")
+        conn.execute(f'RELEASE SAVEPOINT "{name}"')
 
 
 def _safe_rollback(conn: sqlite3.Connection, name: str, owned: bool) -> None:
     if owned:
         try:
-            conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+            conn.execute(f'ROLLBACK TO SAVEPOINT "{name}"')
         except sqlite3.OperationalError:
             pass
 
@@ -114,10 +122,10 @@ def _auto_calibrate(conn: sqlite3.Connection, edge: dict, target_id: str) -> Non
     )
 
 
-def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 1.0) -> None:
+def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: str = "", rate_limit: int = 5, stale_hours: float = 24.0) -> None:
     cutoff = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - stale_hours * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     candidates = conn.execute(
-        "SELECT e.target_id FROM edges e "
+        "SELECT e.target_id, n.label FROM edges e "
         "JOIN nodes n ON n.id = e.target_id "
         "WHERE e.source_id = ? AND n.created_at < ? "
         "AND NOT EXISTS (SELECT 1 FROM events ev WHERE ev.node_id = n.id AND ev.event_type IN ('acted', 'branched')) "
@@ -127,6 +135,7 @@ def _prune_stale_branches(source_id: str, conn: sqlite3.Connection, session_id: 
     ).fetchall()
     for row in candidates:
         tid = row["target_id"]
+        _log.warning("Pruning stale branch %s (%s) from source %s", tid, row["label"], source_id)
         conn.execute("DELETE FROM events WHERE node_id = ?", (tid,))
         conn.execute("DELETE FROM edges WHERE source_id = ? AND target_id = ?", (source_id, tid))
         conn.execute("DELETE FROM edges WHERE source_id = ?", (tid,))

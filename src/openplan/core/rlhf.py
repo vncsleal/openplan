@@ -4,7 +4,9 @@ import base64
 import json
 import logging
 import os
+import re
 import sqlite3
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -12,9 +14,34 @@ from typing import Any
 
 _log = logging.getLogger("openplan.rlhf")
 
+_AUTH_HEADER_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _discover_password() -> str | None:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "opencode serve"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if not result.stdout.strip():
+            return None
+        pid = result.stdout.strip().split("\n")[0]
+        env_result = subprocess.run(
+            ["ps", "e", "-p", pid, "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        )
+        m = re.search(r'OPENCODE_SERVER_PASSWORD=(\S+)', env_result.stdout)
+        if m:
+            return m.group(1)
+    except Exception:
+        _log.debug("Failed to discover opencode password from process env")
+    return None
+
 
 def _auth_header(password: str | None = None) -> dict[str, str]:
     pwd = password or os.environ.get("OPENCODE_SERVER_PASSWORD", "")
+    if not pwd:
+        pwd = _discover_password()
     if pwd:
         token = base64.b64encode(f"opencode:{pwd}".encode()).decode()
         return {"Authorization": f"Basic {token}", "Accept": "application/json"}

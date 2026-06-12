@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS cross_project_insights (
     target_state   TEXT NOT NULL,
     insight_text   TEXT NOT NULL,
     similarity     REAL NOT NULL DEFAULT 0.0,
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(source_project, source_state, target_project, target_state, insight_text)
 );
 CREATE INDEX IF NOT EXISTS idx_cpi_target ON cross_project_insights(target_project, target_state);
 

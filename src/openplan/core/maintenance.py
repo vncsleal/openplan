@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
 from typing import Any
+
+_log = logging.getLogger("openplan.maintenance")
 
 from openplan.core.graph import _graph_health, diagnostics as _diagnostics
 from openplan.core.export import compress as _compress
@@ -31,10 +34,13 @@ def _run_cycle(
                 if fixes:
                     notifications.append({"severity": "info", "code": "AUTO_FIX", "message": f"auto-fixed {fixes} issues in {project}", "project": project})
                 for issue in diag.get("issues", [])[:2]:
+                    if not issue.get("notify", True):
+                        continue
                     notifications.append({"severity": issue.get("severity", "info"), "code": issue["code"], "message": issue["message"], "project": project})
                 if diag.get("overview", {}).get("events", 0) > 100:
                     _compress(project, conn, config, older_than_days=30, merge_orphans=False)
             except Exception:
+                _log.exception("Maintenance cycle failed for %s", project)
                 continue
         conn.commit()
     finally:

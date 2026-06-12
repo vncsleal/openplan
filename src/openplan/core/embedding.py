@@ -104,14 +104,8 @@ class EmbeddingCache:
             return
         try:
             conn.execute("BEGIN")
-        except sqlite3.OperationalError:
-            conn.execute("DELETE FROM vec_embeddings")
-            for i in range(self._matrix.shape[0]):
-                blob = self._vec_to_blob(self._matrix[i])
-                conn.execute(
-                    "INSERT INTO vec_embeddings(rowid, embedding) VALUES (?, ?)",
-                    (i, blob),
-                )
+        except sqlite3.OperationalError as e:
+            _log.warning("vec0 sync: no transaction, skipping: %s", e)
             return
         try:
             conn.execute("DELETE FROM vec_embeddings")
@@ -124,6 +118,7 @@ class EmbeddingCache:
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
+            _log.exception("vec0 sync failed")
             raise
 
     def _query_vec0(
@@ -237,6 +232,12 @@ class EmbeddingCache:
         self._version += len(ids)
         if conn is not None:
             self._sync_vec0(conn)
+
+    def get_embedding(self, state_id: str) -> np.ndarray | None:
+        idx = self._index.get(state_id)
+        if idx is None or self._matrix is None:
+            return None
+        return self._matrix[idx].copy()
 
     def query(self, text: str, conn: sqlite3.Connection, top_k: int = 5) -> list[dict[str, Any]]:
         """Find top_k nearest states by embedding similarity."""

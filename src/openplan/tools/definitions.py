@@ -106,6 +106,7 @@ _TOOLS: list[MCPTool] = [
         {
             "query": {"type": "string", "maxLength": 500, "description": "Search query (omit to list all projects)"},
             "project": {"type": "string", "maxLength": 200, "description": "Optional project slug to scope search"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Max states to return (default 20, max 200)"},
         },
         outputSchema={
             "type": "object",

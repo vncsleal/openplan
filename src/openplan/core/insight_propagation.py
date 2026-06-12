@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import Any
+
+_log = logging.getLogger("openplan.insight_propagation")
 
 
 def propagate(conn: sqlite3.Connection, config: dict[str, Any]) -> int:
@@ -66,6 +69,7 @@ def _embedding_match(conn: sqlite3.Connection, insight: str, source_project: str
             results.append((tgt["project"], s["id"], s["similarity"]))
         return results
     except Exception:
+        _log.exception("Embedding match failed")
         return []
 
 
