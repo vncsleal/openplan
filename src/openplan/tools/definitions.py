@@ -102,9 +102,10 @@ _TOOLS: list[MCPTool] = [
     t(
         "search",
         "Search Knowledge",
-        "Search across all projects for matching states, projects, and insights. Returns a combined result of projects, states, and stored learnings. Use this to find what you know, what projects exist, and what you've learned. When query is omitted, returns a complete project index.",
+        "Search across all projects for matching states, projects, and insights. Returns a combined result of projects, states, and stored learnings. Use this to find what you know, what projects exist, and what you've learned. When query is omitted, returns a complete project index. Optionally scope to a single project with the project parameter.",
         {
             "query": {"type": "string", "maxLength": 500, "description": "Search query (omit to list all projects)"},
+            "project": {"type": "string", "maxLength": 200, "description": "Optional project slug to scope search"},
         },
         outputSchema={
             "type": "object",

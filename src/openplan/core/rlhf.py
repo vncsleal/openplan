@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 import sqlite3
 import urllib.error
 import urllib.request
@@ -11,14 +13,23 @@ from typing import Any
 _log = logging.getLogger("openplan.rlhf")
 
 
+def _auth_header(password: str | None = None) -> dict[str, str]:
+    pwd = password or os.environ.get("OPENCODE_SERVER_PASSWORD", "")
+    if pwd:
+        token = base64.b64encode(f"opencode:{pwd}".encode()).decode()
+        return {"Authorization": f"Basic {token}", "Accept": "application/json"}
+    return {"Accept": "application/json"}
+
+
 def fetch_opencode_session(
     session_id: str,
     base_url: str = "http://localhost:4096",
-    endpoint: str = "/session/{id}/messages",
+    endpoint: str = "/session/{id}/message",
+    password: str | None = None,
 ) -> dict[str, Any] | None:
     url = f"{base_url.rstrip('/')}{endpoint.format(id=session_id)}"
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, headers=_auth_header(password))
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
     except (urllib.error.URLError, urllib.error.HTTPError, ConnectionResetError, TimeoutError) as e:
@@ -70,9 +81,10 @@ def correlate_events(
 def build_rlhf_dataset(
     db_path: str,
     opencode_base_url: str = "http://localhost:4096",
-    opencode_endpoint: str = "/session/{id}/messages",
+    opencode_endpoint: str = "/session/{id}/message",
     window_seconds: float = 30.0,
     max_sessions: int = 0,
+    opencode_password: str | None = None,
 ) -> list[dict[str, Any]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -107,7 +119,7 @@ def build_rlhf_dataset(
             conn.close()
 
         events = [dict(r) for r in event_rows]
-        messages_raw = fetch_opencode_session(sid, opencode_base_url, opencode_endpoint)
+        messages_raw = fetch_opencode_session(sid, opencode_base_url, opencode_endpoint, password=opencode_password)
         if messages_raw is None:
             _log.info("Skipping session %s — opencode server unreachable or no data", sid)
             continue

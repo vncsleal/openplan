@@ -455,43 +455,74 @@ def _token_score(query_tokens: list[str], text_token_set: set[str]) -> float:
     return matches / len(query_tokens)
 
 
-def search(query: str, conn: sqlite3.Connection) -> dict[str, Any]:
-    projects = [dict(r) for r in conn.execute(
-        "SELECT n.project, n.id AS root_id, n.label, COUNT(e.id) AS events "
-        "FROM nodes n LEFT JOIN events e ON e.project = n.project "
-        "WHERE n.id IN (SELECT MIN(n2.id) FROM nodes n2 GROUP BY n2.project) "
-        "GROUP BY n.project ORDER BY events DESC"
-    ).fetchall()]
+def search(query: str, conn: sqlite3.Connection, project: str | None = None) -> dict[str, Any]:
+    if project:
+        projects = [dict(r) for r in conn.execute(
+            "SELECT n.project, MIN(n.id) AS root_id, n.label, COUNT(DISTINCT e.id) AS events "
+            "FROM nodes n LEFT JOIN events e ON e.project = n.project "
+            "WHERE n.project = ? "
+            "GROUP BY n.project",
+            (project,),
+        ).fetchall()]
+    else:
+        projects = [dict(r) for r in conn.execute(
+            "SELECT n.project, n.id AS root_id, n.label, COUNT(e.id) AS events "
+            "FROM nodes n LEFT JOIN events e ON e.project = n.project "
+            "WHERE n.id IN (SELECT MIN(n2.id) FROM nodes n2 GROUP BY n2.project) "
+            "GROUP BY n.project ORDER BY events DESC"
+        ).fetchall()]
 
     query_tokens = _tokenize(query)
 
-    all_nodes = [dict(r) for r in conn.execute(
-        "SELECT id, label, project, activation FROM nodes"
-    ).fetchall()]
+    if project:
+        all_nodes = [dict(r) for r in conn.execute(
+            "SELECT id, label, project, activation FROM nodes WHERE project = ?",
+            (project,),
+        ).fetchall()]
+    else:
+        all_nodes = [dict(r) for r in conn.execute(
+            "SELECT id, label, project, activation FROM nodes"
+        ).fetchall()]
 
     scored = []
     for node in all_nodes:
         label_tokens = _tokenize(node["label"])
         score = _token_score(query_tokens, set(label_tokens))
         if score > 0:
-            scored.append((score, node["activation"], node))
+            matched = [t for t in query_tokens if t in set(label_tokens)]
+            scored.append((score, node["activation"], node, matched))
 
     scored.sort(key=lambda x: (-x[0], -x[1]))
-    matched_states = [s[2] for s in scored[:20]]
+    matched_states = []
+    for score, activation, node, matched in scored[:20]:
+        entry = {"id": node["id"], "label": node["label"], "project": node["project"], "activation": activation}
+        if matched:
+            entry["matched_tokens"] = matched
+        matched_states.append(entry)
 
     if not matched_states:
         like_q = f"%{query}%"
-        matched_states = [dict(r) for r in conn.execute(
-            "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
-            (like_q,),
-        ).fetchall()]
+        if project:
+            rows = conn.execute(
+                "SELECT id, label, project, activation FROM nodes WHERE project = ? AND label LIKE ? ORDER BY activation DESC LIMIT 20",
+                (project, like_q),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, label, project, activation FROM nodes WHERE label LIKE ? ORDER BY activation DESC LIMIT 20",
+                (like_q,),
+            ).fetchall()
+        matched_states = [dict(r) for r in rows]
+
+    edge_query = "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e JOIN nodes n ON n.id = e.source_id"
+    edge_params: tuple = ()
+    if project:
+        edge_query += " WHERE n.project = ?"
+        edge_params = (project,)
 
     insights = []
     if query_tokens:
-        for r in conn.execute(
-            "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
-            "JOIN nodes n ON n.id = e.source_id"
-        ).fetchall():
+        for r in conn.execute(edge_query, edge_params).fetchall():
             try:
                 wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
                 for entry in wh:
@@ -503,10 +534,7 @@ def search(query: str, conn: sqlite3.Connection) -> dict[str, Any]:
                 pass
 
     if not insights:
-        for r in conn.execute(
-            "SELECT e.source_id, e.target_id, e.weight_history, n.project FROM edges e "
-            "JOIN nodes n ON n.id = e.source_id"
-        ).fetchall():
+        for r in conn.execute(edge_query, edge_params).fetchall():
             try:
                 wh = json.loads(r["weight_history"]) if isinstance(r["weight_history"], str) else (r["weight_history"] or [])
                 for entry in wh:

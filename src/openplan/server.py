@@ -240,20 +240,32 @@ async def _handle_search(args: dict) -> CallToolResult:
     try:
         conn = _get_conn()
         query = args.get("query")
+        project = args.get("project")
         if not query:
-            projects_data = [dict(r) for r in conn.execute(
-                "SELECT n.project, MIN(n.id) AS root_id, "
-                "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
-                "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
-                "LEFT JOIN nodes n2 ON n2.project = n.project "
-                "GROUP BY n.project ORDER BY state_count DESC"
-            ).fetchall()]
+            if project:
+                projects_data = [dict(r) for r in conn.execute(
+                    "SELECT n.project, MIN(n.id) AS root_id, "
+                    "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
+                    "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
+                    "LEFT JOIN nodes n2 ON n2.project = n.project "
+                    "WHERE n.project = ? "
+                    "GROUP BY n.project",
+                    (project,),
+                ).fetchall()]
+            else:
+                projects_data = [dict(r) for r in conn.execute(
+                    "SELECT n.project, MIN(n.id) AS root_id, "
+                    "(SELECT label FROM nodes WHERE project = n.project ORDER BY id LIMIT 1) AS root_label, "
+                    "COUNT(DISTINCT n2.id) AS state_count FROM nodes n "
+                    "LEFT JOIN nodes n2 ON n2.project = n.project "
+                    "GROUP BY n.project ORDER BY state_count DESC"
+                ).fetchall()]
             conv = _telemetry.get_global_conversion_rate()
             result: dict[str, Any] = {"query": None, "projects": projects_data, "count": len(projects_data)}
             if conv is not None:
                 result["telemetry"] = {"global_conversion_rate": conv}
             return ok(result)
-        result = _search(query, conn)
+        result = _search(query, conn, project=project)
         return ok(result)
     finally:
         _read_lock_release()
