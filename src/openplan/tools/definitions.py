@@ -63,7 +63,7 @@ _TOOLS: list[MCPTool] = [
         "The only mutation tool. Traverses to a target, creates branches, changes status, abandons branches, prunes subtrees, sets goals, or inspects states. Records evidence, auto-calibrates edge costs, updates baselines. The cursor moves to the target state. Every project state change goes through this tool.",
         {
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
-            "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.). Set to 'abandon', 'prune', or 'set_goal' for special operations."},
+            "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.). Set to 'abandon', 'prune', 'revert', 'set_goal', or 'verify' for special operations."},
             "target": {"type": "string", "maxLength": 500, "description": "Target label or state ID. If it doesn't exist, it's created. Omit when using options."},
             "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "action": {"type": "string"}, "expected_cost": {"type": "object"}}, "required": ["label", "action"]}, "description": "Branch options — creates multiple child states from cursor in one call (replaces branch tool)."},
             "parent": {"type": "string", "maxLength": 20, "description": "Optional parent state ID. Creates target as child of this state instead of cursor."},
@@ -72,8 +72,9 @@ _TOOLS: list[MCPTool] = [
             "expected_cost": {"type": "object", "maxProperties": 10, "description": "Optional expected cost estimate {tokens: number, risk: number}."},
             "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent {tokens: number}. When provided, calibrates the edge with real data."},
             "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs stored on the target state's props."},
-            "evidence": {"type": "string", "maxLength": 2048, "description": "Optional evidence URL or description"},
+            "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint, verification)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Evidence items linking a state to real artifacts. Used with action='verify' to attach proof of completion."},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
+            "detail": {"type": "boolean", "description": "When true, include full bandit_arms, self_tuning, estimation_accuracy in response. Default false."},
             "dry_run": {"type": "boolean", "description": "When true, returns state info without mutating (replaces read_state for inspection)."},
         },
         ["project"],
@@ -107,6 +108,8 @@ _TOOLS: list[MCPTool] = [
             "cursor": {"type": "string", "maxLength": 20, "description": "Optional cursor override. Defaults to current session cursor."},
             "max_cost": {"type": "number", "description": "Optional max cost constraint for pathfinding."},
             "risk_adjustment": {"type": "string", "enum": ["none", "probability", "variance"], "description": "How to adjust cost for edge probability."},
+            "mode": {"type": "string", "enum": ["plan", "retro", "learnings"], "description": "Special modes: 'plan' estimates cost for a new project from historical data; 'retro' compares planned vs actual costs for a completed project; 'learnings' surfaces cross-project patterns."},
+            "detail": {"type": "boolean", "description": "When true, include full bandit_arms, self_tuning, estimation_accuracy in response. Default false."},
         },
         annotations=_READ_ONLY,
         outputSchema={

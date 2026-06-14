@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 _log = logging.getLogger("openplan")
@@ -141,6 +142,24 @@ def _set_cursor(project: str, state_id: str) -> None:
     )
 
 
+def _resolve_target_id(project: str, target: str, conn: Any) -> str:
+    if re.match(r'^S-\d{6}$', target):
+        return target
+    row = conn.execute(
+        "SELECT id FROM nodes WHERE project = ? AND label = ?",
+        (project, target),
+    ).fetchone()
+    if row:
+        return row["id"]
+    row = conn.execute(
+        "SELECT id FROM nodes WHERE project = ? AND label LIKE ? LIMIT 1",
+        (project, f"%{target}%"),
+    ).fetchone()
+    if row:
+        return row["id"]
+    return target
+
+
 def _notif_hash(n: dict) -> str:
     return f"{n.get('code', '')}:{n.get('project', '')}"
 
@@ -238,9 +257,16 @@ async def _handle_act(args: dict) -> CallToolResult:
             return err("NO_CURSOR", f"No position in {project} — call init first")
 
         if action == "abandon":
-            target_id = args.get("target") or source
+            target_input = args.get("target") or source
+            target_id = _resolve_target_id(project, target_input, conn)
             result = _abandon(target_id, conn, session_id=_SESSION_ID)
             need_notify = True
+        elif action == "revert":
+            target_input = args.get("target") or source
+            target_id = _resolve_target_id(project, target_input, conn)
+            result = _act(target_id, action, conn, _config, kind="revert", session_id=_SESSION_ID)
+            need_notify = True
+            did_mutate = True
         elif action == "prune":
             target_id = args.get("target") or source
             result = _prune(target_id, conn, _config, summary_label=args.get("summary_label"), keep_events=args.get("keep_events", False), session_id=_SESSION_ID)
@@ -250,6 +276,20 @@ async def _handle_act(args: dict) -> CallToolResult:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                          (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})))
             result = {"ok": True, "goal": goal}
+        elif action == "goal_reached":
+            target_state = args.get("target")
+            if not target_state:
+                return err("NO_TARGET", "goal_reached requires a target state ID")
+            goal_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
+            if goal_row:
+                try:
+                    gv = json.loads(goal_row["value"])
+                    gv["target_state_id"] = target_state
+                    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                                 (f"goal:{project}", json.dumps(gv)))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            result = {"ok": True, "goal_satisfied": True, "target_state_id": target_state}
         elif args.get("options"):
             result = _branch(source, args["options"], conn, _config, session_id=_SESSION_ID)
             created = result.get("states_created", [])
@@ -259,9 +299,60 @@ async def _handle_act(args: dict) -> CallToolResult:
             need_notify = True
             did_mutate = True
         elif status or args.get("props_patch"):
-            target_id = args.get("target") or source
-            result = _update_state(target_id, conn, status=status, props_patch=args.get("props_patch"), session_id=_SESSION_ID)
+            target_input = args.get("target")
+            if target_input and not re.match(r'^S-\d{6}$', target_input):
+                create_result = _act(source, action, conn, _config, target=target_input,
+                                     session_id=_SESSION_ID)
+                new_id = create_result.get("next_state")
+                if new_id and status:
+                    result = _act(new_id, action, conn, _config, kind="status",
+                                 status=status, props_patch=args.get("props_patch"),
+                                 session_id=_SESSION_ID)
+                    result["created_by"] = new_id
+                else:
+                    result = create_result
+            else:
+                target_id = target_input or source
+                result = _act(target_id, action, conn, _config, kind="status",
+                             status=status, props_patch=args.get("props_patch"),
+                             session_id=_SESSION_ID)
             need_notify = True
+        elif action == "verify":
+            target_input = args.get("target") or source
+            target_id = _resolve_target_id(project, target_input, conn)
+            evidence_list = args.get("evidence")
+            verif_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            if evidence_list:
+                import uuid as _uuid
+                for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                    eid = str(_uuid.uuid4())[:8]
+                    conn.execute(
+                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'verified', ?)",
+                        (eid, project, target_id, ev.get("type", "checkpoint"),
+                         ev.get("uri", ""), ev.get("description", ""), verif_now),
+                    )
+                result = {"ok": True, "state_id": target_id, "evidence_stored": True}
+            else:
+                evidence_rows = [dict(r) for r in conn.execute(
+                    "SELECT id, evidence_type, uri, description, status, created_at FROM evidence WHERE state_id = ? ORDER BY created_at",
+                    (target_id,),
+                ).fetchall()]
+                result = {"ok": True, "state_id": target_id, "evidence": evidence_rows}
+            need_notify = True
+            did_mutate = True
+
+            evidence_rows = conn.execute(
+                "SELECT id, description FROM evidence WHERE state_id = ? AND status = 'verified'",
+                (target_id,),
+            ).fetchall()
+            for er in evidence_rows:
+                desc = er["description"]
+                conn.execute(
+                    "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                    "WHERE project = ? AND criterion LIKE ? AND achieved = 0",
+                    (verif_now, target_id, project, f"%{desc.lower()}%"),
+                )
         elif dry_run:
             from openplan.core.read import read_state as _read_state
             target_id = args.get("target") or source
@@ -281,8 +372,13 @@ async def _handle_act(args: dict) -> CallToolResult:
                          session_id=_SESSION_ID, postconditions=args.get("postconditions"))
             need_notify = bool(result.get("next_state"))
             did_mutate = True
-        if need_notify and result.get("next_state"):
+        if need_notify and result.get("cursor_moved"):
+            cm = result["cursor_moved"]
+            _set_cursor(project, cm["to"])
+        elif need_notify and result.get("next_state"):
             _set_cursor(project, result["next_state"])
+        elif need_notify and result.get("cursor"):
+            _set_cursor(project, result["cursor"])
         elif need_notify and result.get("state_id"):
             _set_cursor(project, result["state_id"])
         if did_mutate:
@@ -330,8 +426,35 @@ async def _handle_recommend(args: dict) -> CallToolResult:
         tree_format = args.get("format", "json")
 
         result: dict[str, Any] = {"ok": True}
+        mode = args.get("mode")
 
-        if query:
+        if mode == "plan":
+            from openplan.core.estimator import estimate as _estimate
+            project_type = args.get("project_type") or ""
+            goal_text = args.get("goal") or ""
+            if not project_type:
+                row = conn.execute("SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
+                project_type = row["project_type"] or "" if row else ""
+            if not goal_text:
+                gr = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
+                if gr:
+                    try:
+                        gv = json.loads(gr["value"])
+                        if isinstance(gv, dict):
+                            goal_text = gv.get("text", "")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            result.update(_estimate(project_type, goal_text, conn))
+            result["mode"] = "plan"
+        elif mode == "retro":
+            from openplan.core.retro import retro as _retro
+            result.update(_retro(project, conn))
+            result["mode"] = "retro"
+        elif mode == "learnings":
+            from openplan.core.learnings import learnings as _learnings
+            result.update(_learnings(conn))
+            result["mode"] = "learnings"
+        elif query:
             from openplan.core.graph import search as _search
             sr = _search(query, conn, project=project, limit=top_k or 20)
             result.update(sr)
@@ -367,6 +490,8 @@ async def _handle_recommend(args: dict) -> CallToolResult:
                     pass
 
         health = _graph_health(project, conn)
+        ev_total = conn.execute("SELECT COUNT(*) AS cnt FROM evidence WHERE project = ?", (project,)).fetchone()["cnt"]
+        ev_verified = conn.execute("SELECT COUNT(*) AS cnt FROM evidence WHERE project = ? AND status = 'verified'", (project,)).fetchone()["cnt"]
         result["project_health"] = {
             "total_states": health["state_count"],
             "edge_count": health["edge_count"],
@@ -375,6 +500,8 @@ async def _handle_recommend(args: dict) -> CallToolResult:
             "calibration_count": health["calibration_count"],
             "completed": conn.execute("SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'done'", (project,)).fetchone()["cnt"],
             "calibration_rate": round(health["calibration_count"] / health["edge_count"], 4) if health["edge_count"] > 0 else 0.0,
+            "evidence_total": ev_total,
+            "evidence_verified": ev_verified,
         }
         result["blockers"] = [dict(r) for r in conn.execute(
             "SELECT id, label, status FROM nodes WHERE project = ? AND status IN ('blocked', 'cascade_blocked')",
@@ -384,7 +511,24 @@ async def _handle_recommend(args: dict) -> CallToolResult:
         goal_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
         if goal_row:
             try:
-                result["goal"] = json.loads(goal_row["value"])
+                goal_data = json.loads(goal_row["value"])
+                markers = [dict(r) for r in conn.execute(
+                    "SELECT criterion, achieved, achieved_at, achieved_by FROM goal_markers WHERE project = ? ORDER BY created_at",
+                    (project,),
+                ).fetchall()]
+                if markers:
+                    goal_data["markers"] = {
+                        "total": len(markers),
+                        "achieved": sum(1 for m in markers if m["achieved"]),
+                        "items": markers,
+                    }
+                result["goal"] = goal_data
+                if goal_data.get("markers"):
+                    gs = goal_data["markers"].get("achieved", 0) == goal_data["markers"].get("total", 0)
+                    if gs:
+                        result["goal_satisfied"] = True
+                if goal_data.get("target_state_id"):
+                    result["goal_satisfied"] = True
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -442,6 +586,25 @@ async def _handle_recommend(args: dict) -> CallToolResult:
         if not sequence and not target and not query and not cursor:
             result["cursor"] = cursor
 
+        detail = args.get("detail", False)
+        if not detail:
+            for key in ("bandit_arms", "self_tuning", "estimation_accuracy"):
+                result.pop(key, None)
+
+        return ok(result, project=project)
+    finally:
+        _read_lock_release()
+
+
+async def _handle_export(args: dict) -> CallToolResult:
+    _read_lock_acquire()
+    try:
+        conn = _get_conn()
+        project = args["project"]
+        fmt = args.get("format", "json")
+        from openplan.core.export import export as _export
+        result = _export(project, conn, fmt=fmt)
+        result["ok"] = True
         return ok(result, project=project)
     finally:
         _read_lock_release()
@@ -451,6 +614,7 @@ HANDLERS = {
     "init": _handle_init,
     "act": _handle_act,
     "recommend": _handle_recommend,
+    "export": _handle_export,
 }
 
 
@@ -589,11 +753,11 @@ async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetP
 Project: {project}
 
 1. Call recommend(project="{project}") to find the best next target
-2. Call plan() to find the cheapest path to that target
-3. Call simulate() to estimate total cost and probability
-4. Call act() to execute the first step
+2. Call act(project="{project}", action="design", target="<describe work>") to branch
+3. Call recommend(project="{project}") to update what's next
+4. Repeat: act → recommend → act until done
 
-Use the goal parameter if the project has a defined end state.""",
+Use the goal parameter via init() if the project has a defined end state.""",
                     ),
                 ),
             ],
@@ -609,12 +773,16 @@ Use the goal parameter if the project has a defined end state.""",
                         type="text",
                         text=f"""Debug blocked state {state_id} in project {project}
 
-1. Call read_state(state_id="{state_id}") to understand the state
-2. Call tree(state_id="{state_id}", up_depth=1) to see parent and siblings
-3. Call plan() to find alternative paths around the block
-4. If alternatives exist, call act() to unblock
+1. Call recommend(project="{project}") — blockers are shown in output
+2. Call act(project="{project}", target="{state_id}", action="review",
+   dry_run=true) to inspect the blocked state
+3. Either:
+   - act(project="{project}", target="{state_id}", status="pending") to unblock
+   - act(project="{project}", action="abandon", target="{state_id}") to drop it
+   - act(project="{project}", action="implement", target="<alternative>",
+     parent="<parent-id>") to create an alternative path
 
-Check if downstream states are cascade_blocked and need recovery.""",
+Check in recommend output for cascade_blocked descendants.""",
                     ),
                 ),
             ],
@@ -629,15 +797,14 @@ Check if downstream states are cascade_blocked and need recovery.""",
                         type="text",
                         text=f"""Review progress for project {project}
 
-1. Call reconstruct(project="{project}") for the full picture
-2. Call tune() for calibration statistics
-3. Call diagnose() for system health issues
+1. Call recommend(project="{project}", detail=true) for full health + costs + tuning
+2. Call export(project="{project}", format="json") for the full graph
 
 Check:
-- Calibration rate (should be > 0.5)
-- Orphan count (should not exceed 5 per 10 states)
+- Calibration rate (should be > 0.5, shown in project_health)
 - Blocked states and cascade_blocked propagation
-- Self-tuning adjustments in meta:self_tuning:history""",
+- Self-tuning bandit acceptance rate
+- Frontier states (what's actionable)""",
                     ),
                 ),
             ],
@@ -649,15 +816,35 @@ Check:
                 role="user",
                 content=TextContent(
                     type="text",
-                    text=f"""You have access to OpenPlan, an MCP server for AI-native project planning.
+                    text=f"""You have access to OpenPlan — an MCP server for AI-native project planning.
 
-init(project, label, project_type?, goal?) — Create a new project context (idempotent). Set project_type for cost baselines (e.g. 'python_cli', 'web_app'). Set goal for the desired end state.
-act(project, action, target, parent?, evidence?, thought?, expected_cost?, postconditions?) — Traverse to a target or create one. Auto-calibrates. Edge preconditions are validated automatically. Postconditions are stored on the target state.
-recommend(project?, goal?, max_cost?, cursor?) — Find the best next target. When a goal is set, finds the cheapest A* path from cursor to goal-aligned states. Without a goal, uses activation scoring.
-search(query?, project?, limit?) — Find projects, states, and insights.
+4 tools:
 
-Your current project is `{project}`.
-Start with init (with optional goal), then act to create work items, recommend to find what to do next.""",
+init(project, label?, project_type?, goal?) — Create a new project (idempotent).
+  Set project_type for cost baselines ('python_cli', 'web_app', 'rust_library').
+  Set goal for the desired end state.
+
+act(project, action, target?, parent?, status?, options?, postconditions?,
+    thought?, evidence?, expected_cost?, dry_run?) — The only mutation tool.
+  Sub-operations: traverse, branch (via options), status update, abandon,
+  verify (postcondition check), dry_run (read without write).
+
+recommend(project?, query?, target?, sequence?, cursor?, detail?) — Read tool.
+  Default (no params): best-next-target with A* path + project health.
+  query=: full-text search across states.
+  target=: A* plan to a specific state.
+  sequence=: simulate a chain of actions.
+  detail=true: include cost baselines, self-tuning, estimation accuracy.
+
+export(project, format?) — JSON / GraphML / adjacency matrix of the full graph.
+
+Workflow:
+  init → act (branch into design/implement/test) → recommend (find best next)
+  → act (traverse or verify) → repeat
+  Use recommend(query=...) to search past decisions.
+  Use export(format="graphml") to visualize the graph externally.
+
+Your current project is `{project}`.""",
                 ),
             ),
         ],
@@ -723,7 +910,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.2.6",
+                server_version="0.4.0",
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )

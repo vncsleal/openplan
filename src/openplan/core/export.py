@@ -60,7 +60,13 @@ def export(project: str, conn: sqlite3.Connection, fmt: str = "json") -> dict[st
     nodes = [dict(r) for r in conn.execute("SELECT * FROM nodes WHERE project = ?", (project,)).fetchall()]
     edges = [dict(r) for r in conn.execute("SELECT e.* FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ?", (project,)).fetchall()]
     events = [dict(r) for r in conn.execute("SELECT * FROM events WHERE project = ?", (project,)).fetchall()]
-    return {"nodes": nodes, "edges": edges, "events": events, "project": project, "exported_at": _now(), "version": "0.2.1"}
+    evidence_rows = [dict(r) for r in conn.execute("SELECT * FROM evidence WHERE project = ? ORDER BY created_at", (project,)).fetchall()]
+    goal_markers_rows = [dict(r) for r in conn.execute("SELECT * FROM goal_markers WHERE project = ? ORDER BY created_at", (project,)).fetchall()]
+    return {
+        "nodes": nodes, "edges": edges, "events": events,
+        "evidence": evidence_rows, "goal_markers": goal_markers_rows,
+        "project": project, "exported_at": _now(), "version": "0.5.0",
+    }
 
 
 def _project_root_node(project: str, conn: sqlite3.Connection) -> str | None:

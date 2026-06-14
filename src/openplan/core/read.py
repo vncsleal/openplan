@@ -318,6 +318,14 @@ def reconstruct(
         except (json.JSONDecodeError, TypeError, ZeroDivisionError):
             pass
 
+    ev_total = 0
+    ev_verified = 0
+    try:
+        ev_total = conn.execute("SELECT COUNT(*) AS cnt FROM evidence WHERE project = ?", (project,)).fetchone()["cnt"]
+        ev_verified = conn.execute("SELECT COUNT(*) AS cnt FROM evidence WHERE project = ? AND status = 'verified'", (project,)).fetchone()["cnt"]
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "project": project,
@@ -343,6 +351,8 @@ def reconstruct(
             "calibration_rate": round(
                 calibration_count / edge_count, 4
             ) if edge_count > 0 else 0.0,
+            "evidence_total": ev_total,
+            "evidence_verified": ev_verified,
         },
     }
 

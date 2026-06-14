@@ -61,6 +61,27 @@ def _record_event(conn: sqlite3.Connection, node_id: str, project: str, event_ty
     return eid
 
 
+_ACTION_COST_DEFAULTS: dict[str, float] = {
+    "research": 1000, "explore": 1000, "analyze": 1000, "investigate": 1000,
+    "design": 2000, "plan": 2000, "architect": 2000,
+    "test": 1500, "verify": 1500, "validate": 1500, "check": 1500,
+    "document": 500, "write_docs": 500, "readme": 500,
+    "implement": 5000, "build": 5000, "create": 5000, "write": 5000, "add": 5000,
+    "deploy": 3000, "release": 3000, "ship": 3000, "publish": 3000,
+}
+
+
+def _get_default_cost(action: str, project_type: str, conn: sqlite3.Connection) -> float:
+    if project_type:
+        bl = conn.execute(
+            "SELECT cost_tokens FROM cost_baselines WHERE project IS NULL AND project_type = ? AND action = ?",
+            (project_type, action),
+        ).fetchone()
+        if bl:
+            return bl["cost_tokens"]
+    return _ACTION_COST_DEFAULTS.get(action, 5000)
+
+
 def _ensure_node(project: str, label: str, conn: sqlite3.Connection, parent_id: str | None = None) -> str:
     sid = generate_id(project, conn)
     now = _now()
@@ -190,6 +211,31 @@ def _detect_cycle(conn: sqlite3.Connection, source_id: str, target_id: str, acti
     return row is not None
 
 
+def _parse_goal_markers(goal: str) -> list[str]:
+    parts = re.split(r'[,;.]+', goal)
+    markers: list[str] = []
+    for p in parts:
+        p = p.strip().lower()
+        if not p:
+            continue
+        for prefix in ("that ", "which ", "a ", "an ", "the "):
+            if p.startswith(prefix):
+                p = p[len(prefix):]
+                break
+        if p and len(p) > 3:
+            markers.append(p)
+    return markers
+
+
+def _insert_goal_markers(project: str, goal: str, conn: sqlite3.Connection) -> None:
+    markers = _parse_goal_markers(goal)
+    for criterion in markers:
+        conn.execute(
+            "INSERT OR IGNORE INTO goal_markers (project, criterion) VALUES (?, ?)",
+            (project, criterion),
+        )
+
+
 def init_project(project: str, label: str | None, conn: sqlite3.Connection, session_id: str = "", project_type: str = "", goal: str = "") -> dict[str, Any]:
     owned_init = _safe_savepoint(conn, "init_tx")
     try:
@@ -203,6 +249,7 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                     (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})),
                 )
+                _insert_goal_markers(project, goal, conn)
                 _record_event(conn, existing["id"], project, "goal_set", {"goal": goal}, session_id)
             if project_type:
                 conn.execute("UPDATE nodes SET project_type = ?, updated_at = ? WHERE id = ?", (project_type, _now(), existing["id"]))
@@ -217,6 +264,7 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                 (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})),
             )
+            _insert_goal_markers(project, goal, conn)
             _record_event(conn, sid, project, "goal_set", {"goal": goal}, session_id)
         conn.execute("UPDATE nodes SET updated_at = ? WHERE id = ?", (now, sid))
         if project_type:
@@ -269,6 +317,22 @@ def _check_preconditions(edge: dict, conn: sqlite3.Connection) -> None:
                     raise PreconditionError(source_id, edge.get("action", ""), f"{field}={expected}")
 
 
+def _check_postconditions(postconditions: dict, target_id: str, conn: sqlite3.Connection) -> None:
+    if not postconditions:
+        return
+    row = conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone()
+    if not row:
+        return
+    try:
+        current_props = json.loads(row["props"]) if isinstance(row["props"], str) else row["props"]
+    except (json.JSONDecodeError, TypeError):
+        current_props = {}
+    for key, expected_value in postconditions.items():
+        actual_value = current_props.get(key)
+        if actual_value is not None and actual_value != expected_value:
+            raise PreconditionError(target_id, "postcondition", f"{key}={expected_value} (actual={actual_value})")
+
+
 def _upsert_baseline(conn: sqlite3.Connection, project: str | None, project_type: str, action: str, cost_tokens: float, cost_risk: float) -> None:
     row = conn.execute(
         "SELECT cost_tokens, cost_risk, sample_count FROM cost_baselines "
@@ -311,7 +375,27 @@ def act(
     session_id: str = "",
     reasoning: dict | None = None,
     postconditions: dict | None = None,
+    kind: str = "transition",
+    status: str | None = None,
+    props_patch: dict | None = None,
+    options: list[dict] | None = None,
 ) -> dict[str, Any]:
+    if kind == "abandon":
+        return abandon(state_id, conn, session_id=session_id)
+    if kind == "revert":
+        return revert(state_id, conn, session_id=session_id)
+    if kind == "branch":
+        if not options:
+            from openplan.core.errors import NoOptionsError
+            raise NoOptionsError()
+        return branch(state_id, options, conn, config, session_id=session_id)
+    if kind == "status":
+        from openplan.core.read import update_state as _update_state_lazy
+        return _update_state_lazy(state_id, conn, status=status, props_patch=props_patch, session_id=session_id)
+    if kind == "read":
+        from openplan.core.read import read_state as _read_state
+        return _read_state(state_id, conn)
+
     owned = _safe_savepoint(conn, "act_tx")
     try:
         raw_src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
@@ -323,9 +407,25 @@ def act(
         target_id = target
         if target:
             tgt = conn.execute("SELECT id FROM nodes WHERE id = ?", (target,)).fetchone()
-            if not tgt:
-                target_id = _ensure_node(src["project"], target, conn, parent_id=state_id if state_id != src["id"] else None)
-            bl_cost = 10000
+            if tgt:
+                target_id = tgt["id"]
+            else:
+                tgt = conn.execute(
+                    "SELECT id FROM nodes WHERE project = ? AND label = ?",
+                    (src["project"], target),
+                ).fetchone()
+                if tgt:
+                    target_id = tgt["id"]
+                else:
+                    tgt = conn.execute(
+                        "SELECT id FROM nodes WHERE project = ? AND label LIKE ? LIMIT 1",
+                        (src["project"], f"%{target}%"),
+                    ).fetchone()
+                    if tgt:
+                        target_id = tgt["id"]
+                    else:
+                        target_id = _ensure_node(src["project"], target, conn, parent_id=state_id if state_id != src["id"] else None)
+            bl_cost = _get_default_cost(action, src.get("project_type", ""), conn)
             if src.get("project_type"):
                 bl = conn.execute(
                     "SELECT cost_tokens FROM cost_baselines WHERE project = ? AND action = ?",
@@ -387,6 +487,7 @@ def act(
         _auto_calibrate_edge(conn, edge, target_id, outcome="success", actual_cost=cost_value, source=cost_source)
         _chain_calibrate(conn, src["project"], event_id)
         if postconditions:
+            _check_postconditions(postconditions, target_id, conn)
             current_props = json.loads(
                 conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone()["props"]
             ) if conn.execute("SELECT props FROM nodes WHERE id = ?", (target_id,)).fetchone() else {}
@@ -404,6 +505,24 @@ def act(
         _invalidate_graph_cache()
         get_activation(state_id, conn, config)
         get_activation(target_id, conn, config)
+
+        goal_satisfied = None
+        try:
+            gm = conn.execute(
+                "SELECT 1 FROM goal_markers WHERE project = ? AND achieved = 1 LIMIT 1",
+                (src["project"],),
+            ).fetchone()
+            if gm:
+                goal_satisfied = True
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (f"goal_satisfied:{src['project']}", json.dumps({"satisfied_at": _now()})),
+                )
+                _record_event(conn, target_id, src["project"], "goal_satisfied", {
+                    "project": src["project"],
+                }, session_id)
+        except Exception:
+            pass
 
         cost_delta = None
         if expected_cost is not None:
@@ -426,6 +545,7 @@ def act(
         "activation_delta": {state_id: get_activation(state_id, conn, config), target_id: get_activation(target_id, conn, config)},
         "cost_actual": {"tokens": cost_value, "risk": edge.get("cost_risk", 0.1)}, "cost_delta": cost_delta, "cost_source": cost_source,
         "new_frontier": [s["id"] for s in frontier],
+        "goal_satisfied": goal_satisfied if goal_satisfied else None,
     }
 
 
@@ -487,6 +607,33 @@ def branch(
     return {"ok": True, "branch_id": branch_id, "options": len(options), "states_created": states_created}
 
 
+def _nearest_active_ancestor(state_id: str, conn: sqlite3.Connection) -> str:
+    project: str | None = None
+    visited: set[str] = set()
+    stack = [state_id]
+    while stack:
+        nid = stack.pop()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        row = conn.execute("SELECT status, project FROM nodes WHERE id = ?", (nid,)).fetchone()
+        if row:
+            project = row["project"]
+            if row["status"] not in ("superseded", "cascade_blocked"):
+                return nid
+        edges = conn.execute("SELECT source_id FROM edges WHERE target_id = ?", (nid,)).fetchall()
+        for e in edges:
+            stack.append(e["source_id"])
+    if project:
+        root = conn.execute(
+            "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+            (project,),
+        ).fetchone()
+        if root:
+            return root["id"]
+    return state_id
+
+
 def abandon(state_id: str, conn: sqlite3.Connection, session_id: str = "") -> dict[str, Any]:
     node = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
     if not node:
@@ -509,12 +656,49 @@ def abandon(state_id: str, conn: sqlite3.Connection, session_id: str = "") -> di
         conn.execute("UPDATE nodes SET status = 'superseded', updated_at = ? WHERE id = ?", (now, nid))
         mark_dirty(nid, conn)
 
+    cursor_move = _nearest_active_ancestor(state_id, conn)
+
     project = node["project"]
     _record_event(conn, state_id, project, "abandoned", {
         "action": "abandoned",
         "state_id": state_id,
         "states_affected": len(affected),
+        "cursor_moved_to": cursor_move,
     }, session_id)
     _invalidate_graph_cache()
 
-    return {"ok": True, "state_id": state_id, "states_affected": len(affected)}
+    result: dict[str, Any] = {"ok": True, "state_id": state_id, "states_affected": len(affected)}
+    if cursor_move and cursor_move != state_id:
+        result["cursor_moved"] = {"from": state_id, "to": cursor_move}
+        result["cursor"] = cursor_move
+    return result
+
+
+def revert(state_id: str, conn: sqlite3.Connection, session_id: str = "") -> dict[str, Any]:
+    node = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
+    if not node:
+        raise InvalidStateError(state_id)
+
+    edge = conn.execute(
+        "SELECT source_id FROM edges WHERE target_id = ? ORDER BY created_at DESC LIMIT 1",
+        (state_id,),
+    ).fetchone()
+
+    if not edge:
+        return {"ok": False, "error": "No previous state to revert to"}
+
+    previous_id = edge["source_id"]
+    now = _now()
+    conn.execute("UPDATE nodes SET status = 'superseded', updated_at = ? WHERE id = ?", (now, state_id))
+
+    _record_event(conn, previous_id, node["project"], "reverted", {
+        "action": "reverted",
+        "from": state_id,
+        "to": previous_id,
+    }, session_id)
+
+    mark_dirty(state_id, conn)
+    mark_dirty(previous_id, conn)
+    _invalidate_graph_cache()
+
+    return {"ok": True, "cursor": previous_id, "reverted_from": state_id, "reverted_to": previous_id}
