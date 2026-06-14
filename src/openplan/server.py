@@ -318,6 +318,24 @@ async def _handle_act(args: dict) -> CallToolResult:
                              status=status, props_patch=args.get("props_patch"),
                              session_id=_SESSION_ID)
             need_notify = True
+            if status == "done":
+                now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%fZ")
+                target_state_id = target_input or source
+                label_row = conn.execute(
+                    "SELECT label FROM nodes WHERE id = ?", (target_state_id,)
+                ).fetchone()
+                if label_row:
+                    state_label = label_row["label"].lower()
+                    for row in conn.execute(
+                        "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
+                        (project,),
+                    ).fetchall():
+                        if row["criterion"].lower() in state_label:
+                            conn.execute(
+                                "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                                "WHERE project = ? AND criterion = ?",
+                                (now_ts, target_state_id, project, row["criterion"]),
+                            )
         elif action == "verify":
             target_input = args.get("target") or source
             target_id = _resolve_target_id(project, target_input, conn)
@@ -528,8 +546,10 @@ async def _handle_recommend(args: dict) -> CallToolResult:
                     gs = goal_data["markers"].get("achieved", 0) == goal_data["markers"].get("total", 0)
                     if gs:
                         result["goal_satisfied"] = True
+                        result["project_complete"] = True
                 if goal_data.get("target_state_id"):
                     result["goal_satisfied"] = True
+                    result["project_complete"] = True
             except (json.JSONDecodeError, TypeError):
                 pass
 
