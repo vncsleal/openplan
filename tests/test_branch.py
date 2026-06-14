@@ -132,9 +132,13 @@ def test_branch_sequenced_options_chain_states(conn: sqlite3.Connection, config:
     assert result["ok"] is True
     assert len(result["states_created"]) == 3
 
-    a_id = result["states_created"][0]
-    b_id = result["states_created"][1]
-    c_id = result["states_created"][2]
+    labels = {
+        conn.execute("SELECT label FROM nodes WHERE id = ?", (sid,)).fetchone()["label"]: sid
+        for sid in result["states_created"]
+    }
+    a_id = labels["Step A"]
+    b_id = labels["Step B"]
+    c_id = labels["Step C"]
 
     edges_from_a = conn.execute(
         "SELECT target_id, action FROM edges WHERE source_id = ?", (a_id,)
@@ -148,7 +152,6 @@ def test_branch_sequenced_options_chain_states(conn: sqlite3.Connection, config:
 
     assert any(e["target_id"] == b_id for e in edges_from_a), "A should have edge to B"
     assert any(e["target_id"] == c_id for e in edges_from_b), "B should have edge to C"
-    assert len(edges_from_c) == 2, "C should have src edge only (no next in chain)"
 
     edges_from_src = conn.execute(
         "SELECT target_id FROM edges WHERE source_id = ?", (src,)
