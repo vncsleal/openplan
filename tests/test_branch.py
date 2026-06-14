@@ -117,3 +117,40 @@ def test_branch_records_event(conn: sqlite3.Connection, config: dict) -> None:
 def test_branch_invalid_state(conn: sqlite3.Connection, config: dict) -> None:
     with pytest.raises(InvalidStateError):
         branch("S-999999", [{"label": "Test", "action": "implement", "prob": 0.8}], conn, config)
+
+
+def test_branch_sequenced_options_chain_states(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn, project="test", label="Root")
+    options = [
+        {"label": "Step A", "action": "implement", "sequence": 1, "expected_cost": {"tokens": 5000, "risk": 0.1}},
+        {"label": "Step C", "action": "implement", "sequence": 3, "expected_cost": {"tokens": 5000, "risk": 0.1}},
+        {"label": "Step B", "action": "implement", "sequence": 2, "expected_cost": {"tokens": 5000, "risk": 0.1}},
+    ]
+
+    result = branch(src, options, conn, config)
+
+    assert result["ok"] is True
+    assert len(result["states_created"]) == 3
+
+    a_id = result["states_created"][0]
+    b_id = result["states_created"][1]
+    c_id = result["states_created"][2]
+
+    edges_from_a = conn.execute(
+        "SELECT target_id, action FROM edges WHERE source_id = ?", (a_id,)
+    ).fetchall()
+    edges_from_b = conn.execute(
+        "SELECT target_id, action FROM edges WHERE source_id = ?", (b_id,)
+    ).fetchall()
+    edges_from_c = conn.execute(
+        "SELECT target_id, action FROM edges WHERE source_id = ?", (c_id,)
+    ).fetchall()
+
+    assert any(e["target_id"] == b_id for e in edges_from_a), "A should have edge to B"
+    assert any(e["target_id"] == c_id for e in edges_from_b), "B should have edge to C"
+    assert len(edges_from_c) == 2, "C should have src edge only (no next in chain)"
+
+    edges_from_src = conn.execute(
+        "SELECT target_id FROM edges WHERE source_id = ?", (src,)
+    ).fetchall()
+    assert len(edges_from_src) == 3, "All 3 options still linked from source"

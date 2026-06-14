@@ -94,6 +94,12 @@ def test_export_after_act(conn: sqlite3.Connection, config: dict) -> None:
     assert data["events"][0]["node_id"] == src
 
 
+def test_version_consistency(conn: sqlite3.Connection, config: dict) -> None:
+    from openplan import VERSION
+    data = export("test", conn)
+    assert data["version"] == VERSION, "export version should match module version"
+
+
 def test_export_graphml(conn: sqlite3.Connection, config: dict) -> None:
     a = _make_node(conn, label="auth login")
     b = _make_node(conn, label="auth home")

@@ -164,6 +164,73 @@ def test_act_reasoning_new_state(conn: sqlite3.Connection, config: dict) -> None
     assert props["tags"] == ["test"]
 
 
+def test_goal_marker_label_matching(conn: sqlite3.Connection, config: dict) -> None:
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "Build converter for markdown to PDF"),
+    )
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "Implement CLI interface"),
+    )
+    state_label = "Build converter for markdown to PDF"
+    now_ts = "2026-06-14T00:00:00.000000Z"
+    state_id = "S-TEST01"
+    conn.execute(
+        "INSERT INTO nodes (id, label, project) VALUES (?, ?, ?)",
+        (state_id, state_label, "test"),
+    )
+
+    for row in conn.execute(
+        "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
+        ("test",),
+    ).fetchall():
+        if row["criterion"].lower() in state_label.lower():
+            conn.execute(
+                "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                "WHERE project = ? AND criterion = ?",
+                (now_ts, state_id, "test", row["criterion"]),
+            )
+
+    markers = conn.execute(
+        "SELECT criterion, achieved FROM goal_markers WHERE project = ? ORDER BY criterion",
+        ("test",),
+    ).fetchall()
+    assert markers[0]["achieved"] == 1, "converter marker should be achieved"
+    assert markers[1]["achieved"] == 0, "CLI marker should remain unachieved"
+
+
+def test_goal_marker_evidence_matching_direction(conn: sqlite3.Connection, config: dict) -> None:
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "CLI accepts --input flag"),
+    )
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "build converter"),
+    )
+    evidence_desc = "Verified that CLI accepts --input flag correctly"
+    now_ts = "2026-06-14T00:00:00.000000Z"
+    state_id = "S-TEST02"
+    conn.execute(
+        "INSERT INTO nodes (id, label, project) VALUES (?, ?, ?)",
+        (state_id, "test evidence match", "test"),
+    )
+
+    conn.execute(
+        "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+        "WHERE project = ? AND ? LIKE '%' || criterion || '%' AND achieved = 0",
+        (now_ts, state_id, "test", evidence_desc.lower()),
+    )
+
+    markers = conn.execute(
+        "SELECT criterion, achieved FROM goal_markers WHERE project = ? ORDER BY criterion",
+        ("test",),
+    ).fetchall()
+    assert markers[0]["achieved"] == 1, "ev description contains 'CLI accepts --input flag'"
+    assert markers[1]["achieved"] == 0, "ev description doesn't contain 'build converter'"
+
+
 def test_act_reasoning_existing_state(conn: sqlite3.Connection, config: dict) -> None:
     src = _make_node(conn)
     tgt = _make_node(conn)
