@@ -567,7 +567,8 @@ def branch(
     owned_branch = _safe_savepoint(conn, "branch_tx")
     try:
         branch_id = generate_branch_id(project, conn)
-        states_created = []
+        states_created: list[str] = []
+        opt_by_sid: dict[str, dict] = {}
         for opt in options:
             sid = generate_id(project, conn)
             label = opt.get("label", "")
@@ -575,6 +576,7 @@ def branch(
                 "INSERT INTO nodes (id, label, project, props, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (sid, label, project, json.dumps({"boost": True, "boosted_at": now}), now, now),
             )
+            opt_by_sid[sid] = opt
             action = opt["action"]
             cost_tokens = opt.get("expected_cost", {}).get("tokens", 10000)
             cost_risk = opt.get("expected_cost", {}).get("risk", 0.1)
@@ -584,6 +586,16 @@ def branch(
                 (state_id, sid, action, cost_tokens, cost_risk, prob, now, now),
             )
             states_created.append(sid)
+
+        sequenced = [(opt, sid) for sid, opt in opt_by_sid.items() if opt.get("sequence") is not None]
+        if sequenced:
+            sequenced.sort(key=lambda x: x[0]["sequence"])
+            for (opt_a, sid_a), (opt_b, sid_b) in zip(sequenced, sequenced[1:]):
+                action_next = opt_b.get("action", "implement")
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (sid_a, sid_b, action_next, 1000, 0.1, 0.9, now, now),
+                )
 
         for s in states_created:
             increment_max_in_degree(s, conn)
