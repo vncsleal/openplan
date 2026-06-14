@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from openplan import VERSION
 from openplan.core.activation import get_activation, mark_dirty, recompute_all_dirty
 from openplan.core.errors import InvalidStateError, OpenPlanError
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
@@ -65,7 +66,7 @@ def export(project: str, conn: sqlite3.Connection, fmt: str = "json") -> dict[st
     return {
         "nodes": nodes, "edges": edges, "events": events,
         "evidence": evidence_rows, "goal_markers": goal_markers_rows,
-        "project": project, "exported_at": _now(), "version": "0.5.0",
+        "project": project, "exported_at": _now(), "version": VERSION,
     }
 
 

@@ -24,6 +24,7 @@ from mcp.types import (
     ToolsCapability, ResourcesCapability,
 )
 
+from openplan import VERSION
 from openplan.config import load_config
 from openplan.core.analytics import compute_analytics
 from openplan.core.errors import OpenPlanError
@@ -350,8 +351,8 @@ async def _handle_act(args: dict) -> CallToolResult:
                 desc = er["description"]
                 conn.execute(
                     "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
-                    "WHERE project = ? AND criterion LIKE ? AND achieved = 0",
-                    (verif_now, target_id, project, f"%{desc.lower()}%"),
+                    "WHERE project = ? AND ? LIKE '%' || criterion || '%' AND achieved = 0",
+                    (verif_now, target_id, project, desc.lower()),
                 )
         elif dry_run:
             from openplan.core.read import read_state as _read_state
@@ -910,7 +911,7 @@ async def main() -> None:
             write,
             InitializationOptions(
                 server_name="openplan",
-                server_version="0.4.0",
+                server_version=VERSION,
                 capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
             ),
         )
