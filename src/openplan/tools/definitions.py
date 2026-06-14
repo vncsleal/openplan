@@ -74,7 +74,6 @@ _TOOLS: list[MCPTool] = [
             "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs stored on the target state's props."},
             "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint, verification)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Evidence items linking a state to real artifacts. Used with action='verify' to attach proof of completion."},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
-            "detail": {"type": "boolean", "description": "When true, include full bandit_arms, self_tuning, estimation_accuracy in response. Default false."},
             "dry_run": {"type": "boolean", "description": "When true, returns state info without mutating (replaces read_state for inspection)."},
         },
         ["project"],
