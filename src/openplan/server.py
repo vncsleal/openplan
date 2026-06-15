@@ -314,6 +314,10 @@ async def _handle_act(args: dict) -> CallToolResult:
                 result["next_state"] = created[0]
             need_notify = True
             did_mutate = True
+        elif dry_run:
+            from openplan.core.read import read_state as _read_state
+            target_id = args.get("target") or source
+            result = _read_state(target_id, conn)
         elif status or args.get("props_patch"):
             target_input = args.get("target")
             if target_input and not re.match(r'^S-\d{6}$', target_input):
@@ -333,14 +337,37 @@ async def _handle_act(args: dict) -> CallToolResult:
                              status=status, props_patch=args.get("props_patch"),
                              session_id=_SESSION_ID)
             need_notify = True
+            target_state_id = target_input or source
             if status == "done":
                 now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%fZ")
-                target_state_id = target_input or source
                 label_row = conn.execute(
                     "SELECT label FROM nodes WHERE id = ?", (target_state_id,)
                 ).fetchone()
                 if label_row and label_row["label"]:
                     _check_goal_markers(conn, project, target_state_id, label_row["label"], now_ts)
+            evidence_list = args.get("evidence")
+            if evidence_list:
+                import uuid as _uuid
+                for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                    eid = str(_uuid.uuid4())[:8]
+                    ev_type = ev.get("type", "checkpoint")
+                    ev_uri = ev.get("uri", "")
+                    ev_desc = ev.get("description", "")
+                    ev_status = "verified"
+                    metadata_ev = "{}"
+                    if ev_type == "file" and ev_uri:
+                        try:
+                            st = os.stat(ev_uri)
+                            metadata_ev = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+                        except OSError:
+                            ev_status = "unverified"
+                            metadata_ev = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
+                    conn.execute(
+                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (eid, project, target_state_id, ev_type, ev_uri, ev_desc, ev_status, metadata_ev, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")),
+                    )
+                result["evidence_stored"] = True
         elif action == "verify":
             target_input = args.get("target") or source
             target_id = _resolve_target_id(project, target_input, conn)
