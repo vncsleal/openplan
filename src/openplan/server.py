@@ -806,7 +806,7 @@ async def list_prompts() -> list[Prompt]:
         Prompt(
             name="agent_loop",
             title="Agent Loop",
-            description="The recommended workflow for using OpenPlan: init → act → recommend → search",
+            description="The recommended workflow for using OpenPlan: init → act → recommend → export",
             arguments=[
                 PromptArgument(name="project", description="Project slug", required=False),
             ],
@@ -928,10 +928,12 @@ init(project, label?, project_type?, goal?) — Create a new project (idempotent
   Set project_type for cost baselines ('python_cli', 'web_app', 'rust_library').
   Set goal for the desired end state.
 
-act(project, action, target?, parent?, status?, options?, postconditions?,
-    thought?, evidence?, expected_cost?, dry_run?) — The only mutation tool.
-  Sub-operations: traverse, branch (via options), status update, abandon,
-  verify (postcondition check), dry_run (read without write).
+act(project, action, target?, parent?, status?, options?, parallel?,
+    postconditions?, thought?, evidence?, expected_cost?, actual_cost?,
+    satisfies_goal?, dry_run?) — The only mutation tool.
+  Sub-operations: traverse, branch (via options with auto-sequence),
+  status update, abandon, prune, revert, verify (with satisfies_goal),
+  set_goal, dry_run (read without write).
 
 recommend(project?, query?, target?, sequence?, cursor?, detail?) — Read tool.
   Default (no params): best-next-target with A* path + project health.
