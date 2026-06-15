@@ -190,13 +190,9 @@ def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
         if cursor:
             enriched["cursor"] = cursor
     notifs = _get_fresh_notifications(project)
-    payload = {"ok": True, "data": enriched}
-    if notifs:
-        payload["_notifications"] = notifs
-    result_str = json.dumps(payload, default=_j)
+    result_str = json.dumps({"ok": True, "data": enriched, **({"_notifications": notifs} if notifs else {})}, default=_j)
     return CallToolResult(
         content=[TextContent(type="text", text=result_str)],
-        structuredContent=payload,
     )
 
 
