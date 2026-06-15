@@ -559,6 +559,7 @@ def branch(
     conn: sqlite3.Connection,
     config: dict[str, Any],
     session_id: str = "",
+    parallel: bool = False,
 ) -> dict[str, Any]:
     src = conn.execute("SELECT * FROM nodes WHERE id = ?", (state_id,)).fetchone()
     if not src:
@@ -591,14 +592,25 @@ def branch(
             )
             states_created.append(sid)
 
-        sequenced = [(opt, sid) for sid, opt in opt_by_sid.items() if opt.get("sequence") is not None]
-        if sequenced:
+        has_user_sequence = any(opt.get("sequence") is not None for opt in options)
+        if parallel:
+            pass
+        elif has_user_sequence:
+            sequenced = [(opt, sid) for sid, opt in opt_by_sid.items() if opt.get("sequence") is not None]
             sequenced.sort(key=lambda x: x[0]["sequence"])
             for (opt_a, sid_a), (opt_b, sid_b) in zip(sequenced, sequenced[1:]):
                 action_next = opt_b.get("action", "implement")
                 conn.execute(
                     "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (sid_a, sid_b, action_next, 1000, 0.1, 0.9, now, now),
+                )
+        else:
+            for i in range(len(states_created) - 1):
+                opt_b = opt_by_sid[states_created[i + 1]]
+                action_next = opt_b.get("action", "implement")
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (states_created[i], states_created[i + 1], action_next, 1000, 0.1, 0.9, now, now),
                 )
 
         for s in states_created:

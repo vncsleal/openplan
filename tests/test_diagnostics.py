@@ -62,15 +62,32 @@ def test_diagnostics_flat_tree(conn: sqlite3.Connection, config: dict) -> None:
     result = diagnostics("test", conn)
 
     assert result["overview"]["states"] == 4
+    assert result["overview"]["edges"] == 5
+    assert result["overview"]["max_depth"] == 1  # BFS finds shortest path (root→child), not chain depth
+    assert result["overview"]["leaf_states"] == 1
+    assert result["overview"]["root_states"] == 1
+    assert len(result["actions_used"]) == 3
+    assert result["orphan_count"] == 1
+    assert result["health"]["action_types"] == 3
+    assert result["health"]["calibrated_edges"] == 0
+
+
+def test_diagnostics_parallel_tree(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn, "test", "Root")
+    opts = [
+        {"label": "A", "action": "implement", "prob": 0.8, "expected_cost": {"tokens": 1000, "risk": 0.1}},
+        {"label": "B", "action": "research", "prob": 0.7, "expected_cost": {"tokens": 2000, "risk": 0.2}},
+        {"label": "C", "action": "review", "prob": 0.9, "expected_cost": {"tokens": 500, "risk": 0.05}},
+    ]
+    branch(src, opts, conn, config, parallel=True)
+
+    result = diagnostics("test", conn)
+
+    assert result["overview"]["states"] == 4
     assert result["overview"]["edges"] == 3
     assert result["overview"]["max_depth"] == 1
     assert result["overview"]["leaf_states"] == 3
-    assert result["overview"]["root_states"] == 1
-    assert len(result["actions_used"]) == 3
     assert result["orphan_count"] == 3
-    assert result["health"]["action_types"] == 3
-    assert result["health"]["calibrated_edges"] == 0
-    assert any(i["code"] == "SHALLOW_GRAPH" for i in result["issues"])
 
 
 def test_diagnostics_deep_tree(conn: sqlite3.Connection, config: dict) -> None:

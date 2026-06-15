@@ -292,7 +292,7 @@ async def _handle_act(args: dict) -> CallToolResult:
                     pass
             result = {"ok": True, "goal_satisfied": True, "target_state_id": target_state}
         elif args.get("options"):
-            result = _branch(source, args["options"], conn, _config, session_id=_SESSION_ID)
+            result = _branch(source, args["options"], conn, _config, session_id=_SESSION_ID, parallel=args.get("parallel", False))
             created = result.get("states_created", [])
             if created:
                 _set_cursor(project, created[0])
