@@ -584,11 +584,12 @@ def branch(
             )
             opt_by_sid[sid] = opt
             action = opt["action"]
+            src_type = src["project_type"] if src["project_type"] else ""
             expected = opt.get("expected_cost")
             if expected and "tokens" in expected:
                 cost_tokens = expected["tokens"]
             else:
-                cost_tokens = _get_default_cost(action, src.get("project_type", ""), conn)
+                cost_tokens = _get_default_cost(action, src_type, conn)
             cost_risk = expected.get("risk", 0.1) if expected else 0.1
             prob = opt.get("prob", 0.8)
             conn.execute(
