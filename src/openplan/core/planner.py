@@ -297,7 +297,8 @@ def plan(
             if neighbor not in visited or visited[neighbor] > new_g:
                 new_edge_infos = edge_infos + [
                     {"from": node, "action": e_data["action"], "to": neighbor,
-                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"]}
+                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"],
+                     "effective_cost": round(adjusted_cost, 1)}
                 ]
                 heapq.heappush(pq, (new_g + _heuristic(neighbor), neighbor, path + [neighbor], new_prob, new_edge_infos, new_g))
 
@@ -323,7 +324,8 @@ def plan(
             if neighbor not in visited or visited[neighbor] > new_g:
                 new_edge_infos = edge_infos + [
                     {"from": node, "action": f"reverse({e_data['action']})", "to": neighbor, "direction": "reverse",
-                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"]}
+                     "prob": edge_prob, "cost_tokens": e_data["cost_tokens"], "cost_risk": e_data["cost_risk"],
+                     "effective_cost": round(adjusted_cost, 1)}
                 ]
                 heapq.heappush(pq, (new_g + _heuristic(neighbor), neighbor, path + [neighbor], new_prob, new_edge_infos, new_g))
 
@@ -342,6 +344,8 @@ def plan(
     total_variance = 0.0
     for ei in edge_infos:
         entry = {"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"], "direction": ei.get("direction", "forward")}
+        if "effective_cost" in ei:
+            entry["effective_cost"] = ei["effective_cost"]
         action = ei.get("action", "").replace("reverse(", "").rstrip(")")
         td = tuning_data.get(action, {})
         if td.get("cost_variance") is not None:
@@ -379,7 +383,7 @@ def plan(
             {
                 "path": p,
                 "expected_cost": {"tokens": sum(ei["cost_tokens"] for ei in es), "prob": pp, "steps": len(p) - 1},
-                "traversal": [{"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"]} for ei in es],
+                "traversal": [{"from": ei["from"], "action": ei["action"], "to": ei["to"], "prob": ei["prob"], "effective_cost": ei.get("effective_cost")} for ei in es],
             }
             for gc, p, pp, es in top_paths[1:]
         ]

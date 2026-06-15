@@ -80,6 +80,10 @@ def test_plan_pathfinding(conn: sqlite3.Connection, config: dict) -> None:
     assert result["expected_cost"]["tokens"] == 17000
     assert result["expected_cost"]["risk"] == 0.1
 
+    for entry in result["traversal"]:
+        assert "effective_cost" in entry, "each traversal entry should show effective_cost"
+        assert isinstance(entry["effective_cost"], float), "effective_cost should be a float"
+
 
 def test_plan_respects_constraints(conn: sqlite3.Connection, config: dict) -> None:
     start = _make_node(conn)

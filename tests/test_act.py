@@ -271,6 +271,14 @@ def test_evidence_metadata_has_size_for_file(conn: sqlite3.Connection, config: d
         os.unlink(tmp_path)
 
 
+def test_goal_match_token_crosses_word_boundaries(conn: sqlite3.Connection, config: dict) -> None:
+    from openplan.core.export import _goal_match
+    assert _goal_match("fix bug", "Bugfix"), "word substring in label word"
+    assert _goal_match("implement core", "Implement core parser"), "full match"
+    assert _goal_match("add tests", "Test all modules"), "word 'test' in 'Test'"
+    assert not _goal_match("deploy db", "Setup project"), "no overlap"
+
+
 def test_act_reasoning_existing_state(conn: sqlite3.Connection, config: dict) -> None:
     src = _make_node(conn)
     tgt = _make_node(conn)

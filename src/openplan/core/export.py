@@ -11,6 +11,20 @@ from openplan.core.errors import InvalidStateError, OpenPlanError
 from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
+def _goal_match(criterion: str, label: str) -> bool:
+    cl = criterion.lower()
+    ll = label.lower()
+    if cl in ll or ll in cl:
+        return True
+    cw = cl.split()
+    lw = ll.split()
+    for c in cw:
+        for w in lw:
+            if c in w or w in c:
+                return True
+    return False
+
+
 def _xml_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
 
@@ -209,9 +223,7 @@ def prune(
                     "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
                     (project,),
                 ).fetchall():
-                    cr = row["criterion"].lower()
-                    dl = drow["label"].lower()
-                    if cr in dl or dl in cr:
+                    if _goal_match(row["criterion"], drow["label"]):
                         conn.execute(
                             "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
                             "WHERE project = ? AND criterion = ?",
@@ -227,9 +239,7 @@ def prune(
                 "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
                 (project,),
             ).fetchall():
-                cr = row["criterion"].lower()
-                ls = label_src.lower()
-                if cr in ls or ls in cr:
+                if _goal_match(row["criterion"], label_src):
                     conn.execute(
                         "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
                         "WHERE project = ? AND criterion = ?",
