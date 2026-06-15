@@ -10,7 +10,7 @@ from openplan.core.errors import InvalidStateError, InvalidStatusError, NoPathEr
 from openplan.core.graph import _get_frontier_states, _graph_health
 from openplan.core.planner import plan as _plan
 from openplan.core.reasoning import REASONING_FIELDS, STATUS_VALUES, ReasoningPayload
-from openplan.core.state import _now, _record_event
+from openplan.core.transaction import _now, _record_event
 
 
 def read_state(state_id: str, conn: sqlite3.Connection) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from openplan.core.state import generate_event_id
+from openplan.core.ids import generate_event_id
 from openplan.core.planner import learn
 from openplan.db.schema import init_db
 

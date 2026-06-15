@@ -15,7 +15,7 @@ from openplan.core.errors import (
     NoActionError, NoEdgeError, NoEventError, NoPathError, OpenPlanError,
     TargetNotFoundError, TargetResolutionError,
 )
-from openplan.core.state import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
+from openplan.core.transaction import _now, _record_event, _safe_release, _safe_rollback, _safe_savepoint
 
 
 def _actual_tokens(entry: dict) -> float:
