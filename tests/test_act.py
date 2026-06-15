@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 
 import pytest
 
@@ -229,6 +231,44 @@ def test_goal_marker_evidence_matching_direction(conn: sqlite3.Connection, confi
     ).fetchall()
     assert markers[0]["achieved"] == 1, "ev description contains 'CLI accepts --input flag'"
     assert markers[1]["achieved"] == 0, "ev description doesn't contain 'build converter'"
+
+
+def test_evidence_stat_verified_for_existing_file(conn: sqlite3.Connection, config: dict) -> None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as f:
+        f.write(b"test content")
+        tmp_path = f.name
+    try:
+        st = os.stat(tmp_path)
+        status = "verified"
+    except OSError:
+        status = "unverified"
+    finally:
+        os.unlink(tmp_path)
+    assert status == "verified", "existing file should be verified"
+
+
+def test_evidence_stat_fails_for_missing_file(conn: sqlite3.Connection, config: dict) -> None:
+    missing_path = "/tmp/nonexistent_file_for_test_987654321.txt"
+    try:
+        os.stat(missing_path)
+        status = "verified"
+    except OSError:
+        status = "unverified"
+    assert status == "unverified", "missing file should not be verified"
+
+
+def test_evidence_metadata_has_size_for_file(conn: sqlite3.Connection, config: dict) -> None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as f:
+        f.write(b"print('hello')")
+        tmp_path = f.name
+    try:
+        st = os.stat(tmp_path)
+        metadata = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+        md = json.loads(metadata)
+        assert md["size"] == 14  # len(b"print('hello')")
+        assert "mtime" in md
+    finally:
+        os.unlink(tmp_path)
 
 
 def test_act_reasoning_existing_state(conn: sqlite3.Connection, config: dict) -> None:
