@@ -6,8 +6,8 @@ import sqlite3
 import pytest
 
 from openplan.core.activation import reset_cache
-from openplan.core.state import act, generate_id
-from openplan.core.export import export
+from openplan.core.state import act, generate_id, branch
+from openplan.core.export import export, prune
 from openplan.db.schema import init_db
 
 
@@ -92,6 +92,43 @@ def test_export_after_act(conn: sqlite3.Connection, config: dict) -> None:
     assert len(data["edges"]) == 1
     assert len(data["events"]) == 1
     assert data["events"][0]["node_id"] == src
+
+
+def test_prune_with_evidence(conn: sqlite3.Connection, config: dict) -> None:
+    src = generate_id("test", conn)
+    conn.execute("INSERT INTO nodes (id, label, project) VALUES (?, ?, ?)", (src, "Root", "test"))
+    child = generate_id("test", conn)
+    conn.execute("INSERT INTO nodes (id, label, project) VALUES (?, ?, ?)", (child, "Child", "test"))
+    gchild = generate_id("test", conn)
+    conn.execute("INSERT INTO nodes (id, label, project) VALUES (?, ?, ?)", (gchild, "Grandchild", "test"))
+    conn.execute(
+        "INSERT INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob) VALUES (?, ?, ?, ?, ?, ?)",
+        (src, child, "implement", 1000, 0.1, 0.8),
+    )
+    conn.execute(
+        "INSERT INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob) VALUES (?, ?, ?, ?, ?, ?)",
+        (child, gchild, "implement", 1000, 0.1, 0.8),
+    )
+    conn.execute("UPDATE nodes SET status = 'done' WHERE id IN (?, ?)", (child, gchild))
+    conn.execute(
+        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("EV-001", "test", gchild, "file", "/tmp/test.txt", "evidence on grandchild", "verified", "{}"),
+    )
+    conn.commit()
+
+    result = prune(child, conn, config)
+    assert result["ok"] is True
+    assert result["collapsed_nodes"] == 1  # grandchild collapsed
+
+    gchild_remaining = conn.execute("SELECT id FROM nodes WHERE id = ?", (gchild,)).fetchone()
+    assert gchild_remaining is None, "grandchild should be deleted"
+
+    ev_remaining = conn.execute("SELECT id FROM evidence WHERE state_id = ?", (gchild,)).fetchone()
+    assert ev_remaining is None, "evidence for grandchild should be deleted"
+
+    child_remaining = conn.execute("SELECT label, status FROM nodes WHERE id = ?", (child,)).fetchone()
+    assert child_remaining is not None, "pruned state itself should remain (renamed)"
+    assert child_remaining["status"] == "done"
 
 
 def test_version_consistency(conn: sqlite3.Connection, config: dict) -> None:

@@ -202,6 +202,7 @@ def prune(
                 (did, did),
             ).fetchone()["cnt"]
             collapsed_edges += e_cnt
+            conn.execute("DELETE FROM evidence WHERE state_id = ?", (did,))
             conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", (did, did))
             conn.execute("DELETE FROM nodes WHERE id = ?", (did,))
 
