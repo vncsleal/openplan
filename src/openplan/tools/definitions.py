@@ -35,6 +35,32 @@ _DESTRUCTIVE = MCPToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 _TOOLS: list[MCPTool] = [
     t(
+        "complete",
+        "Complete a phase and automatically advance to the next one. Marks the given state as done, attaches evidence, then traverses to the next sequential phase (if any) and returns the updated plan. Replaces a 3-call sequence: act(status=done) + act(target=next) + recommend.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "state": {"type": "string", "maxLength": 500, "description": "State ID (S-XXXXXX) or state label to mark as complete"},
+            "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Optional evidence items to attach to the completed state"},
+            "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent {tokens: number}. Calibrates the edge with real data."},
+            "auto_verify": {"type": "boolean", "description": "When true, stat-checks file-type evidence and refuses completion if files don't exist. Default false."},
+        },
+        ["project", "state"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "completed_state": {"type": "string"},
+                "next_state": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "next_label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "next_action": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "completed_plan": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+                "remaining_phases": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                "project_health": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+            },
+            "required": ["ok", "completed_state"],
+        },
+    ),
+    t(
         "start",
         "One-call project kickoff. Initializes a project, parses the goal into phases, estimates costs for each phase from global baselines, creates the graph, and returns the full plan with cursor set to the first phase. Replaces a 3-call init+branch+recommend sequence.",
         {
@@ -105,6 +131,7 @@ _TOOLS: list[MCPTool] = [
             "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent {tokens: number}. When provided, calibrates the edge with real data."},
             "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs stored on the target state's props."},
             "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint, verification)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Evidence items linking a state to real artifacts. Used with action='verify' to attach proof of completion."},
+            "auto_verify": {"type": "boolean", "description": "When true and setting status='done', stat-checks all file-type evidence and refuses to mark done if files don't exist on disk. Default false (trust the agent)."},
             "satisfies_goal": {"type": "string", "description": "Goal criterion text to explicitly mark as achieved by this verification. Only used with action='verify'."},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
             "dry_run": {"type": "boolean", "description": "When true, returns state info without mutating (replaces read_state for inspection)."},

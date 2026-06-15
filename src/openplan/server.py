@@ -271,6 +271,117 @@ async def _handle_start(args: dict) -> CallToolResult:
     return ok(result, project=project)
 
 
+async def _handle_complete(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    project = args["project"]
+    try:
+        conn = _get_conn()
+        state_input = args["state"]
+
+        # Resolve state: S-XXXXXX ID or label match
+        if re.match(r'^S-\d{6}$', state_input):
+            state_id = state_input
+        else:
+            label_match = conn.execute(
+                "SELECT id FROM nodes WHERE project = ? AND LOWER(label) = LOWER(?) ORDER BY created_at DESC LIMIT 1",
+                (project, state_input),
+            ).fetchone()
+            if not label_match:
+                label_match = conn.execute(
+                    "SELECT id FROM nodes WHERE project = ? AND LOWER(label) LIKE LOWER(?) ORDER BY created_at DESC LIMIT 1",
+                    (project, f"%{state_input}%"),
+                ).fetchone()
+            if not label_match:
+                return err("STATE_NOT_FOUND", f"No state matching '{state_input}' found in project '{project}'")
+            state_id = label_match["id"]
+
+        # Get state info to infer action from incoming edges
+        current_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (state_id,)).fetchone()
+        label_text = current_label["label"] if current_label else ""
+
+        # Find the action used to reach this state (prefer incoming edge from a non-root state)
+        incoming = conn.execute(
+            "SELECT e.action, e.source_id FROM edges e WHERE e.target_id = ? ORDER BY e.updated_at DESC LIMIT 5",
+            (state_id,),
+        ).fetchall()
+        action = incoming[0]["action"] if incoming else "implement"
+
+        # auto_verify check before marking done
+        auto_verify = args.get("auto_verify", False)
+        if auto_verify:
+            evidence_list = args.get("evidence", [])
+            for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                if ev.get("type") == "file" and ev.get("uri"):
+                    try:
+                        os.stat(ev["uri"])
+                    except OSError:
+                        return err("VERIFICATION_FAILED",
+                            f"Cannot complete {state_id} ('{label_text}'): file evidence '{ev['uri']}' not found on disk. "
+                            "Set auto_verify=false to bypass.")
+
+        # Mark state as done with evidence and actual cost
+        done_result = _act(state_id, action, conn, _config, kind="status",
+                          status="done", evidence=args.get("evidence"),
+                          postconditions=args.get("postconditions"),
+                          session_id=_SESSION_ID)
+
+        # Check goal markers on completion
+        now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%fZ")
+        if label_text:
+            _check_goal_markers(conn, project, state_id, label_text, now_ts)
+
+        # Find next phase: sequential edge from this state
+        next_edge = conn.execute(
+            "SELECT e.target_id, e.action, n.label FROM edges e "
+            "JOIN nodes n ON n.id = e.target_id "
+            "WHERE e.source_id = ? AND e.action IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM nodes n2 WHERE n2.id = e.target_id AND n2.status = 'done') "
+            "ORDER BY e.prob DESC, e.cost_tokens ASC LIMIT 1",
+            (state_id,),
+        ).fetchone()
+
+        result = {
+            "ok": True,
+            "completed_state": state_id,
+            "completed_label": label_text,
+        }
+
+        if next_edge:
+            # Traverse to next phase
+            actual_cost = args.get("actual_cost")
+            act_result = _act(state_id, next_edge["action"], conn, _config,
+                             target=next_edge["target_id"],
+                             actual_cost=actual_cost,
+                             session_id=_SESSION_ID)
+            if act_result.get("next_state"):
+                _set_cursor(project, act_result["next_state"])
+                result["next_state"] = act_result["next_state"]
+                result["next_label"] = next_edge["label"] or ""
+                result["next_action"] = next_edge["action"]
+
+            # Count remaining phases
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'pending'",
+                (project,),
+            ).fetchone()
+            result["remaining_phases"] = remaining["cnt"] if remaining else 0
+            result["completed_plan"] = (remaining["cnt"] if remaining else 0) == 0
+        else:
+            _set_cursor(project, state_id)
+            result["completed_plan"] = True
+            result["remaining_phases"] = 0
+
+        # Include project health snapshot
+        from openplan.core.graph import _graph_health as _gh
+        health = _gh(project, conn, _config)
+        result["project_health"] = health
+
+        need_notify = True
+    finally:
+        _write_lock_release()
+    if need_notify:
+        await _push_resource_notification(project)
+    return ok(result, project=project)
 
 
 async def _handle_act(args: dict) -> CallToolResult:
@@ -358,6 +469,23 @@ async def _handle_act(args: dict) -> CallToolResult:
                     result = create_result
             else:
                 target_id = target_input or source
+                # auto_verify: refuse to mark done if file evidence doesn't exist on disk
+                auto_verify = args.get("auto_verify", False)
+                if auto_verify and status == "done":
+                    evidence_list = args.get("evidence", [])
+                    all_verified = True
+                    for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                        if ev.get("type") == "file" and ev.get("uri"):
+                            try:
+                                os.stat(ev["uri"])
+                            except OSError:
+                                all_verified = False
+                                break
+                    if not all_verified:
+                        return err("VERIFICATION_FAILED",
+                            f"Cannot mark {target_input or source} as done: file evidence failed disk verification. "
+                            "Set auto_verify=false to bypass, or provide valid file paths.")
+
                 result = _act(target_id, action, conn, _config, kind="status",
                              status=status, props_patch=args.get("props_patch"),
                              session_id=_SESSION_ID)
@@ -734,6 +862,7 @@ async def _handle_export(args: dict) -> CallToolResult:
 HANDLERS = {
     "init": _handle_init,
     "start": _handle_start,
+    "complete": _handle_complete,
     "act": _handle_act,
     "recommend": _handle_recommend,
     "export": _handle_export,
