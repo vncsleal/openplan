@@ -289,6 +289,10 @@ async def _handle_act(args: dict) -> CallToolResult:
             target_id = args.get("target") or source
             result = _prune(target_id, conn, _config, summary_label=args.get("summary_label"), keep_events=args.get("keep_events", False), session_id=_SESSION_ID)
             need_notify = bool(result.get("ok"))
+            if result.get("ok"):
+                root_row = conn.execute("SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1", (project,)).fetchone()
+                if root_row:
+                    result["cursor"] = root_row["id"]
         elif action == "set_goal":
             goal = args.get("target", "")
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
@@ -420,6 +424,14 @@ async def _handle_act(args: dict) -> CallToolResult:
                     "WHERE project = ? AND ? LIKE '%' || criterion || '%' AND achieved = 0",
                     (verif_now, target_id, project, desc.lower()),
                 )
+
+            satisfies = args.get("satisfies_goal")
+            if satisfies:
+                conn.execute(
+                    "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                    "WHERE project = ? AND LOWER(criterion) = LOWER(?) AND achieved = 0",
+                    (verif_now, target_id, project, satisfies),
+                )
         elif dry_run:
             from openplan.core.read import read_state as _read_state
             target_id = args.get("target") or source
@@ -433,9 +445,13 @@ async def _handle_act(args: dict) -> CallToolResult:
                 if p_row["project"] != project:
                     return err("PARENT_PROJECT_MISMATCH", f"Parent {parent} belongs to project '{p_row['project']}', not '{project}'")
                 source = parent
+            actual_cost = args.get("actual_cost")
+            if actual_cost is None and args.get("expected_cost"):
+                ec = args["expected_cost"]
+                actual_cost = {"tokens": ec.get("tokens", 1000), "risk": ec.get("risk", 0.1)}
             result = _act(source, action, conn, _config, target=args.get("target"),
                          evidence=args.get("evidence"), thought=args.get("thought"),
-                         expected_cost=args.get("expected_cost"), actual_cost=args.get("actual_cost"),
+                         expected_cost=args.get("expected_cost"), actual_cost=actual_cost,
                          session_id=_SESSION_ID, postconditions=args.get("postconditions"))
             need_notify = bool(result.get("next_state"))
             did_mutate = True
