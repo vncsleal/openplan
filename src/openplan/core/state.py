@@ -584,8 +584,12 @@ def branch(
             )
             opt_by_sid[sid] = opt
             action = opt["action"]
-            cost_tokens = opt.get("expected_cost", {}).get("tokens", 10000)
-            cost_risk = opt.get("expected_cost", {}).get("risk", 0.1)
+            expected = opt.get("expected_cost")
+            if expected and "tokens" in expected:
+                cost_tokens = expected["tokens"]
+            else:
+                cost_tokens = _get_default_cost(action, src.get("project_type", ""), conn)
+            cost_risk = expected.get("risk", 0.1) if expected else 0.1
             prob = opt.get("prob", 0.8)
             conn.execute(
                 "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
