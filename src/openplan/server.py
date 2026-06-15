@@ -330,7 +330,8 @@ async def _handle_act(args: dict) -> CallToolResult:
                         "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
                         (project,),
                     ).fetchall():
-                        if row["criterion"].lower() in state_label:
+                        criterion_lower = row["criterion"].lower()
+                        if criterion_lower in state_label or state_label in criterion_lower:
                             conn.execute(
                                 "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
                                 "WHERE project = ? AND criterion = ?",
