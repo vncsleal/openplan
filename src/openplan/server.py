@@ -14,7 +14,7 @@ from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    CallToolResult, GetPromptResult, ListResourcesResult, Prompt,
+    GetPromptResult, ListResourcesResult, Prompt,
     PromptMessage, PromptArgument, ReadResourceResult, Resource,
     ServerCapabilities, ServerNotification, TextContent, TextResourceContents,
     ToolsCapability, ResourcesCapability,
@@ -217,17 +217,24 @@ async def read_resource(uri: str) -> ReadResourceResult:
 
 @_app.call_tool()
 async def call_tool(name: str, arguments: dict) -> CallToolResult:
+    from mcp.types import CallToolResult as _CTR, TextContent as _TC
     handler = HANDLERS.get(name)
     if not handler:
-        return err("UNKNOWN", f"Unknown tool: {name}")
+        return _CTR(content=[_TC(type="text", text=json.dumps({"ok": False, "error": {"code": "UNKNOWN", "message": f"Unknown tool: {name}"}}))], isError=True)
     try:
-        return await handler(arguments)
+        result = await handler(arguments)
+        if isinstance(result, dict):
+            text = json.dumps(result)
+            return _CTR(content=[_TC(type="text", text=text)], structuredContent=result)
+        return result
     except OpenPlanError as e:
-        return err(e.code, e.message)
+        err_data = {"ok": False, "error": {"code": e.code, "message": e.message}}
+        return _CTR(content=[_TC(type="text", text=json.dumps(err_data))], structuredContent=err_data, isError=True)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as e:
-        return err("INTERNAL_ERROR", str(e))
+        err_data = {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
+        return _CTR(content=[_TC(type="text", text=json.dumps(err_data))], structuredContent=err_data, isError=True)
 
 
 def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue: list, queue_lock: threading.Lock, stop_event: threading.Event) -> None:

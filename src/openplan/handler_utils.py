@@ -9,8 +9,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from mcp.types import CallToolResult, TextContent
-
 _log = logging.getLogger("openplan")
 
 _conn: Any = None
@@ -175,16 +173,10 @@ def _store_evidence(conn: Any, project: str, state_id: str, evidence_list: Any, 
 
 
 async def _push_resource_notification(project: str) -> None:
-    import anyio
-    from mcp.types import ResourceUpdatedNotification, ResourceUpdatedNotificationParams
-    try:
-        async with anyio.create_task_group() as tg:
-            tg.cancel_scope.cancel()
-    except Exception:
-        pass
+    pass
 
 
-def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
+def ok(data: dict[str, Any], project: str | None = None) -> dict[str, Any]:
     from openplan import VERSION
     enriched = dict(data)
     enriched["version"] = VERSION
@@ -192,14 +184,11 @@ def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
         notifs = _get_fresh_notifications(project)
         if notifs:
             enriched["_notifications"] = notifs
-    return CallToolResult(content=[TextContent(type="text", text=json.dumps(enriched))])
+    return enriched
 
 
-def err(code: str, message: str) -> CallToolResult:
-    return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps({"ok": False, "error": {"code": code, "message": message}}))],
-        isError=True,
-    )
+def err(code: str, message: str) -> dict[str, Any]:
+    return {"ok": False, "error": {"code": code, "message": message}}
 
 
 def _notif_hash(n: dict) -> str:
