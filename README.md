@@ -2,29 +2,22 @@
 
 **AI-native state space planner. MCP server. Python. 4 tools.**
 
-OpenPlan is an MCP server that gives AI agents a structured planning and memory system. Instead of tasks, milestones, and statuses, everything is a **state** in a directed graph with probabilistic edges, auto-calibrating costs, and a recommendation engine that tells the agent where to go next.
+OpenPlan is an MCP server that gives AI agents a structured planning and memory system. Instead of tasks and milestones, everything is a **state** in a directed graph with probabilistic edges, auto-calibrating costs, and A* pathfinding that tells the agent where to go next.
 
 ## Tools (4)
 
-`init` — Create a new project context (idempotent)
-`act` — Traverse from your position to a target. Auto-creates targets, auto-calibrates edges, records evidence and thought.
-`recommend` — "What should I do?" Scores all reachable states across a project and returns the best target with an A* path plan.
-`search` — "What do I know about X?" Full-text + insight search across all projects. Omit query to list all projects.
+`init` — Create a new project context (idempotent). Accepts `project_type` for cost baselines and `goal` for tracked achievement markers.
 
-## How It Works
+`act` — The only mutation tool. Traverses edges, creates branches (auto-sequenced by default, `parallel=True` for fan-out), sets status, attaches evidence (with filesystem verification), prunes subtrees, reverts, and verifies goal satisfaction.
 
-```
-States — positions in the project's semantic space (activation 0-1)
-Edges — typed transitions between states (cost, probability, weight history)
-Planning — A* pathfinding with bimodal heuristic
-Calibration — Every act auto-records weight_history; learn() provides explicit outcome
-Maintenance — Background daemon runs diagnostics, auto-fix, compress, and telemetry flush
-```
+`recommend` — Returns the best next target with an A* path, confidence intervals, effective costs, project health, goal progress, cross-project estimation by type, and self-tuning bandit state.
+
+`export` — Export the full graph as JSON, GraphML, or adjacency matrix.
 
 ## Quick Start
 
 ```bash
-pip install openplan
+pip install -e ".[dev]"
 
 # Start the MCP server
 openplan-server
@@ -44,14 +37,6 @@ Configure MCP in your opencode.json / claude_desktop_config.json:
 }
 ```
 
-## Data Model
-
-```
-nodes:    id, label, activation, frontier, project, props
-edges:    source_id, target_id, action, cost_tokens, cost_risk, prob, weight_history
-events:   id, project, node_id, event_type, payload, version, idempotency_key, session_id
-```
-
 ## Architecture
 
 ```
@@ -62,7 +47,7 @@ events:   id, project, node_id, event_type, payload, version, idempotency_key, s
   core/         db/
   ├─ state.py   ├─ connection.py
   ├─ graph.py   ├─ schema.py
-  ├─ planner.py └─ ...
+  ├─ planner.py ├─ ...
   ├─ activation.py
   ├─ embedding.py
   ├─ export.py
@@ -74,10 +59,20 @@ events:   id, project, node_id, event_type, payload, version, idempotency_key, s
 **Shell imports core. Core never imports shell.**
 SQLite with WAL mode, foreign keys, savepoints. RW lock for concurrency.
 
+## Data Model
+
+```
+nodes:    id, label, activation, frontier, project, props, parent_id, status, project_type
+edges:    source_id, target_id, action, cost_tokens, cost_risk, prob, weight_history
+events:   id, project, node_id, event_type, payload, version, idempotency_key, session_id
+goal_markers: project, criterion, achieved, achieved_by
+evidence: id, project, state_id, evidence_type, uri, status, metadata (size, mtime)
+```
+
 ## Testing
 
 ```bash
-pip install openplan[dev]
+pip install -e ".[dev]"
 pytest tests/ -v
 ```
 

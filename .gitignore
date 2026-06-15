@@ -21,6 +21,7 @@ venv/
 *.db
 *.db-wal
 *.db-shm
+openplan.db
 backups/
 
 # Pytest
