@@ -231,6 +231,7 @@ def prune(
                         )
             conn.execute("DELETE FROM evidence WHERE state_id = ?", (did,))
             conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", (did, did))
+            conn.execute("UPDATE nodes SET parent_id = NULL WHERE parent_id = ?", (did,))
             conn.execute("DELETE FROM nodes WHERE id = ?", (did,))
 
         label_src = node["label"]
