@@ -189,6 +189,7 @@ def _get_fresh_notifications(project: str | None = None) -> list[dict]:
 def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
     enriched = dict(data)
     enriched.setdefault("ok", True)
+    enriched.setdefault("version", VERSION)
     if project:
         cursor = _get_cursor(project)
         if cursor:
@@ -363,10 +364,13 @@ async def _handle_complete(args: dict) -> CallToolResult:
         if next_edge:
             # Traverse to next phase — pass expected_cost from edge for retro calibration
             actual_cost = args.get("actual_cost")
-            edge_cost = next_edge["cost_tokens"] if next_edge.get("cost_tokens") else None
+            try:
+                edge_cost = next_edge["cost_tokens"]
+            except (IndexError, KeyError, TypeError):
+                edge_cost = None
             act_result = _act(state_id, next_edge["action"], conn, _config,
                              target=next_edge["target_id"],
-                             expected_cost={"tokens": edge_cost, "risk": 0.1} if edge_cost else None,
+                             expected_cost={"tokens": edge_cost, "risk": 0.1} if edge_cost is not None else None,
                              actual_cost=actual_cost,
                              session_id=_SESSION_ID)
             if act_result.get("next_state"):
@@ -377,7 +381,7 @@ async def _handle_complete(args: dict) -> CallToolResult:
 
             # Count remaining phases
             remaining = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status = 'pending'",
+                "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress')",
                 (project,),
             ).fetchone()
             result["remaining_phases"] = remaining["cnt"] if remaining else 0
