@@ -41,6 +41,7 @@ from openplan.core.state import act as _act
 from openplan.core.state import abandon as _abandon
 from openplan.core.state import init_project as _init
 from openplan.core.state import branch as _branch
+from openplan.core.state import _insert_goal_markers
 from openplan.core.export import prune as _prune
 from openplan.core.simulate import simulate as _simulate
 from openplan.core.tree import build_tree as _tree
@@ -292,6 +293,8 @@ async def _handle_act(args: dict) -> CallToolResult:
             goal = args.get("target", "")
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                          (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})))
+            conn.execute("DELETE FROM goal_markers WHERE project = ?", (project,))
+            _insert_goal_markers(project, goal, conn)
             result = {"ok": True, "goal": goal}
         elif action == "goal_reached":
             target_state = args.get("target")
