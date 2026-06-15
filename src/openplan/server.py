@@ -208,6 +208,21 @@ def _j(o: Any) -> str:
     return o.hex() if isinstance(o, bytes) else str(o)
 
 
+def _check_goal_markers(conn: Any, project: str, state_id: str, label: str, timestamp: str) -> None:
+    label_lower = label.lower()
+    for row in conn.execute(
+        "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
+        (project,),
+    ).fetchall():
+        criterion_lower = row["criterion"].lower()
+        if criterion_lower in label_lower or label_lower in criterion_lower:
+            conn.execute(
+                "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                "WHERE project = ? AND criterion = ?",
+                (timestamp, state_id, project, row["criterion"]),
+            )
+
+
 async def _push_resource_notification(project: str) -> None:
     try:
         session = app.request_context.session
@@ -324,19 +339,8 @@ async def _handle_act(args: dict) -> CallToolResult:
                 label_row = conn.execute(
                     "SELECT label FROM nodes WHERE id = ?", (target_state_id,)
                 ).fetchone()
-                if label_row:
-                    state_label = label_row["label"].lower()
-                    for row in conn.execute(
-                        "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
-                        (project,),
-                    ).fetchall():
-                        criterion_lower = row["criterion"].lower()
-                        if criterion_lower in state_label or state_label in criterion_lower:
-                            conn.execute(
-                                "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
-                                "WHERE project = ? AND criterion = ?",
-                                (now_ts, target_state_id, project, row["criterion"]),
-                            )
+                if label_row and label_row["label"]:
+                    _check_goal_markers(conn, project, target_state_id, label_row["label"], now_ts)
         elif action == "verify":
             target_input = args.get("target") or source
             target_id = _resolve_target_id(project, target_input, conn)
@@ -404,6 +408,11 @@ async def _handle_act(args: dict) -> CallToolResult:
                          session_id=_SESSION_ID, postconditions=args.get("postconditions"))
             need_notify = bool(result.get("next_state"))
             did_mutate = True
+            if result.get("ok"):
+                now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%fZ")
+                src_row = conn.execute("SELECT label FROM nodes WHERE id = ?", (source,)).fetchone()
+                if src_row and src_row["label"]:
+                    _check_goal_markers(conn, project, source, src_row["label"], now_ts)
         if need_notify and result.get("cursor_moved"):
             cm = result["cursor_moved"]
             _set_cursor(project, cm["to"])
