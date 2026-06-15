@@ -215,7 +215,7 @@ def _parse_goal_markers(goal: str) -> list[str]:
     # Replace parenthetical lists like (memory, Redis) with a placeholder to avoid splitting commas inside parens
     paren_re = re.compile(r'\([^)]*\)')
     processed = paren_re.sub(lambda m: m.group(0).replace(",", " and"), goal)
-    parts = re.split(r'[,;.]+', processed)
+    parts = re.split(r'[,;]+', processed)
     markers: list[str] = []
     for p in parts:
         p = p.strip().lower()
