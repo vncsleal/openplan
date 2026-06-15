@@ -185,6 +185,7 @@ def _get_fresh_notifications(project: str | None = None) -> list[dict]:
 
 def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
     enriched = dict(data)
+    enriched.setdefault("ok", True)
     if project:
         cursor = _get_cursor(project)
         if cursor:
@@ -193,6 +194,7 @@ def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
     result_str = json.dumps({"ok": True, "data": enriched, **({"_notifications": notifs} if notifs else {})}, default=_j)
     return CallToolResult(
         content=[TextContent(type="text", text=result_str)],
+        structuredContent=enriched,
     )
 
 
