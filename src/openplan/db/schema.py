@@ -163,12 +163,17 @@ def init_db(conn: sqlite3.Connection) -> None:
             uri            TEXT NOT NULL,
             description    TEXT NOT NULL DEFAULT '',
             status         TEXT NOT NULL DEFAULT 'unverified',
+            metadata       TEXT NOT NULL DEFAULT '{}',
             verified_at    TEXT,
             created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_state ON evidence(state_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project)")
+    try:
+        conn.execute("ALTER TABLE evidence ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+    except Exception:
+        pass
     try_init_vec0(conn)
 
 

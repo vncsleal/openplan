@@ -346,11 +346,23 @@ async def _handle_act(args: dict) -> CallToolResult:
                 import uuid as _uuid
                 for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
                     eid = str(_uuid.uuid4())[:8]
+                    ev_type = ev.get("type", "checkpoint")
+                    ev_uri = ev.get("uri", "")
+                    ev_desc = ev.get("description", "")
+                    status = "verified"
+                    if ev_type == "file" and ev_uri:
+                        try:
+                            st = os.stat(ev_uri)
+                            metadata = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+                        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+                            status = "unverified"
+                            metadata = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
+                    else:
+                        metadata = "{}"
                     conn.execute(
-                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'verified', ?)",
-                        (eid, project, target_id, ev.get("type", "checkpoint"),
-                         ev.get("uri", ""), ev.get("description", ""), verif_now),
+                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (eid, project, target_id, ev_type, ev_uri, ev_desc, status, metadata, verif_now),
                     )
                 result = {"ok": True, "state_id": target_id, "evidence_stored": True}
             else:
