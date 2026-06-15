@@ -210,27 +210,12 @@ def _j(o: Any) -> str:
 
 def _check_goal_markers(conn: Any, project: str, state_id: str, label: str, timestamp: str) -> None:
     label_lower = label.lower()
-    label_words = label_lower.split()
     for row in conn.execute(
         "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
         (project,),
     ).fetchall():
         criterion_lower = row["criterion"].lower()
-        criterion_words = criterion_lower.split()
-        matched = criterion_lower in label_lower or label_lower in criterion_lower
-        if not matched:
-            for cw in criterion_words:
-                if len(cw) < 3:
-                    continue
-                for lw in label_words:
-                    if len(lw) < 3:
-                        continue
-                    if cw in lw or lw in cw:
-                        matched = True
-                        break
-                if matched:
-                    break
-        if matched:
+        if criterion_lower in label_lower or label_lower in criterion_lower:
             conn.execute(
                 "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
                 "WHERE project = ? AND criterion = ?",

@@ -271,11 +271,12 @@ def test_evidence_metadata_has_size_for_file(conn: sqlite3.Connection, config: d
         os.unlink(tmp_path)
 
 
-def test_goal_match_token_crosses_word_boundaries(conn: sqlite3.Connection, config: dict) -> None:
+def test_goal_match_full_string_only(conn: sqlite3.Connection, config: dict) -> None:
     from openplan.core.export import _goal_match
-    assert _goal_match("fix bug", "Bugfix"), "word substring in label word"
-    assert _goal_match("implement core", "Implement core parser"), "full match"
-    assert _goal_match("add tests", "Test all modules"), "word 'test' in 'Test'"
+    assert _goal_match("implement core", "Implement core parser"), "full string contains criterion"
+    assert _goal_match("Setup project", "setup project"), "case insensitive match"
+    assert not _goal_match("fix bug", "Bugfix"), "no full-string overlap in portmanteau"
+    assert not _goal_match("add tests", "Test all modules"), "no full-string overlap reversed"
     assert not _goal_match("deploy db", "Setup project"), "no overlap"
 
 

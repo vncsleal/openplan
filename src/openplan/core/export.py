@@ -14,19 +14,7 @@ from openplan.core.state import _now, _record_event, _safe_release, _safe_rollba
 def _goal_match(criterion: str, label: str) -> bool:
     cl = criterion.lower()
     ll = label.lower()
-    if cl in ll or ll in cl:
-        return True
-    cw = cl.split()
-    lw = ll.split()
-    for c in cw:
-        if len(c) < 3:
-            continue
-        for w in lw:
-            if len(w) < 3:
-                continue
-            if c in w or w in c:
-                return True
-    return False
+    return cl in ll or ll in cl
 
 
 def _xml_escape(s: str) -> str:
