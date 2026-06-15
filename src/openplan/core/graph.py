@@ -303,7 +303,11 @@ def _graph_health(project: str, conn: sqlite3.Connection, cursor: str | None = N
         (project,),
     ).fetchone()["cnt"]
 
-    orphan_exclude = f"AND n.id != '{cursor}' " if cursor else ""
+    params: list[Any] = [project, project]
+    orphan_exclude = ""
+    if cursor:
+        orphan_exclude = "AND n.id != ? "
+        params.append(cursor)
     orphans = [
         dict(r) for r in conn.execute(
             f"SELECT n.id, n.label, n.activation FROM nodes n "
@@ -311,7 +315,7 @@ def _graph_health(project: str, conn: sqlite3.Connection, cursor: str | None = N
             f"AND n.id != (SELECT MIN(n2.id) FROM nodes n2 WHERE n2.project = ?) "
             f"{orphan_exclude}"
             f"ORDER BY n.activation DESC LIMIT 50",
-            (project, project),
+            params,
         ).fetchall()
     ]
 

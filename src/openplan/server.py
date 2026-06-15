@@ -214,6 +214,35 @@ def _j(o: Any) -> str:
     return o.hex() if isinstance(o, bytes) else str(o)
 
 
+def _store_evidence(
+    conn: Any, project: str, state_id: str,
+    evidence_list: Any, timestamp: str,
+) -> int:
+    import uuid
+    count = 0
+    for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+        eid = str(uuid.uuid4())[:8]
+        ev_type = ev.get("type", "checkpoint")
+        ev_uri = ev.get("uri", "")
+        ev_desc = ev.get("description", "")
+        ev_status = "verified"
+        metadata = "{}"
+        if ev_type == "file" and ev_uri:
+            try:
+                st = os.stat(ev_uri)
+                metadata = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+            except OSError:
+                ev_status = "unverified"
+                metadata = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
+        conn.execute(
+            "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (eid, project, state_id, ev_type, ev_uri, ev_desc, ev_status, metadata, timestamp),
+        )
+        count += 1
+    return count
+
+
 def _check_goal_markers(conn: Any, project: str, state_id: str, label: str, timestamp: str) -> None:
     label_lower = label.lower()
     for row in conn.execute(
@@ -346,29 +375,10 @@ async def _handle_complete(args: dict) -> CallToolResult:
         if label_text:
             _check_goal_markers(conn, project, state_id, label_text, now_ts)
 
-        # Persist evidence (same logic as status handler path)
+        # Persist evidence
         evidence_list = args.get("evidence")
         if evidence_list:
-            import uuid as _uuid
-            for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
-                eid = str(_uuid.uuid4())[:8]
-                ev_type = ev.get("type", "checkpoint")
-                ev_uri = ev.get("uri", "")
-                ev_desc = ev.get("description", "")
-                ev_status = "verified"
-                metadata_ev = "{}"
-                if ev_type == "file" and ev_uri:
-                    try:
-                        st = os.stat(ev_uri)
-                        metadata_ev = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
-                    except OSError:
-                        ev_status = "unverified"
-                        metadata_ev = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
-                conn.execute(
-                    "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (eid, project, state_id, ev_type, ev_uri, ev_desc, ev_status, metadata_ev, now_ts),
-                )
+            _store_evidence(conn, project, state_id, evidence_list, now_ts)
 
         # Find next phase: sequential edge from this state
         next_edge = conn.execute(
@@ -548,26 +558,8 @@ async def _handle_act(args: dict) -> CallToolResult:
                     _check_goal_markers(conn, project, target_state_id, label_row["label"], now_ts)
             evidence_list = args.get("evidence")
             if evidence_list:
-                import uuid as _uuid
-                for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
-                    eid = str(_uuid.uuid4())[:8]
-                    ev_type = ev.get("type", "checkpoint")
-                    ev_uri = ev.get("uri", "")
-                    ev_desc = ev.get("description", "")
-                    ev_status = "verified"
-                    metadata_ev = "{}"
-                    if ev_type == "file" and ev_uri:
-                        try:
-                            st = os.stat(ev_uri)
-                            metadata_ev = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
-                        except OSError:
-                            ev_status = "unverified"
-                            metadata_ev = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
-                    conn.execute(
-                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (eid, project, target_state_id, ev_type, ev_uri, ev_desc, ev_status, metadata_ev, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")),
-                    )
+                ev_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                _store_evidence(conn, project, target_state_id, evidence_list, ev_ts)
                 result["evidence_stored"] = True
         elif action == "verify":
             target_input = args.get("target") or source
@@ -575,27 +567,7 @@ async def _handle_act(args: dict) -> CallToolResult:
             evidence_list = args.get("evidence")
             verif_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             if evidence_list:
-                import uuid as _uuid
-                for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
-                    eid = str(_uuid.uuid4())[:8]
-                    ev_type = ev.get("type", "checkpoint")
-                    ev_uri = ev.get("uri", "")
-                    ev_desc = ev.get("description", "")
-                    status = "verified"
-                    if ev_type == "file" and ev_uri:
-                        try:
-                            st = os.stat(ev_uri)
-                            metadata = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
-                        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
-                            status = "unverified"
-                            metadata = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
-                    else:
-                        metadata = "{}"
-                    conn.execute(
-                        "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (eid, project, target_id, ev_type, ev_uri, ev_desc, status, metadata, verif_now),
-                    )
+                _store_evidence(conn, project, target_id, evidence_list, verif_now)
                 result = {"ok": True, "state_id": target_id, "evidence_stored": True}
             else:
                 evidence_rows = [dict(r) for r in conn.execute(
@@ -625,10 +597,6 @@ async def _handle_act(args: dict) -> CallToolResult:
                     "WHERE project = ? AND LOWER(criterion) = LOWER(?) AND achieved = 0",
                     (verif_now, target_id, project, satisfies),
                 )
-        elif dry_run:
-            from openplan.core.read import read_state as _read_state
-            target_id = args.get("target") or source
-            result = _read_state(target_id, conn)
         else:
             parent = args.get("parent")
             if parent:
