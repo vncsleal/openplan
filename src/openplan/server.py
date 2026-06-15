@@ -925,8 +925,9 @@ Check:
 4 tools:
 
 init(project, label?, project_type?, goal?) — Create a new project (idempotent).
-  Set project_type for cost baselines ('python_cli', 'web_app', 'rust_library').
-  Set goal for the desired end state.
+  ALWAYS set project_type — without it, cross-project learning (estimation_by_type,
+  learnings, plan mode) cannot accumulate data for this project type.
+  Set goal for the desired end state (comma-separated for multiple markers).
 
 act(project, action, target?, parent?, status?, options?, parallel?,
     postconditions?, thought?, evidence?, expected_cost?, actual_cost?,
@@ -945,10 +946,15 @@ recommend(project?, query?, target?, sequence?, cursor?, detail?) — Read tool.
 export(project, format?) — JSON / GraphML / adjacency matrix of the full graph.
 
 Workflow:
-  init → act (branch into design/implement/test) → recommend (find best next)
-  → act (traverse or verify) → repeat
+  init(project_type=...) → act(options=[...]) → recommend → act(target=..., expected_cost=...) → repeat
+  When done: act(action="verify", satisfies_goal="criterion") to tick goal markers.
   Use recommend(query=...) to search past decisions.
   Use export(format="graphml") to visualize the graph externally.
+
+Best practices (learned from self-hosting):
+  1. ALWAYS set project_type on init — otherwise your work is invisible to cross-project estimation.
+  2. Use satisfies_goal on verify to explicitly tick markers — subtitle matching is fragile.
+  3. Pass expected_cost on traverse to get meaningful cost_delta and calibration.
 
 Your current project is `{project}`.""",
                 ),
