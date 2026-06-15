@@ -46,6 +46,7 @@ from openplan.core.export import prune as _prune
 from openplan.core.simulate import simulate as _simulate
 from openplan.core.tree import build_tree as _tree
 from openplan.core.telemetry import get_telemetry
+from openplan.core.telemetry_client import get_telemetry_client as _get_telemetry_client
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.tools.definitions import get_tools
@@ -62,6 +63,7 @@ _notification_seen: set[str] = set()
 _notification_lock = threading.Lock()
 _maintenance_stop = threading.Event()
 _telemetry = get_telemetry()
+_telemetry_client = _get_telemetry_client()
 _SESSION_ID: str = os.environ.get("OPENCODE_SESSION_ID", "")
 if not _SESSION_ID:
     _log.info("OPENCODE_SESSION_ID not set — will generate persistent session ID from DB")
@@ -627,6 +629,21 @@ async def _handle_act(args: dict) -> CallToolResult:
                 _conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('self_tuning:act_count', ?)", (json.dumps(count),))
     finally:
         _write_lock_release()
+    if did_mutate and _telemetry_client.enabled and result.get("ok"):
+        project_type = conn.execute(
+            "SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+            (project,),
+        ).fetchone()
+        pt = (project_type["project_type"] or "") if project_type else ""
+        cost_actual = result.get("cost_actual", {})
+        if cost_actual:
+            _telemetry_client.record(
+                project_type=pt,
+                action=action,
+                expected_cost=args.get("expected_cost", {}).get("tokens") if args.get("expected_cost") else None,
+                actual_cost=cost_actual.get("tokens", 0),
+                outcome="success",
+            )
     if need_notify:
         await _push_resource_notification(project)
     if auto_tuned:
@@ -1114,6 +1131,7 @@ def _shutdown() -> None:
     global _conn, _maintenance_stop
     _maintenance_stop.set()
     _telemetry.flush_to_events()
+    _telemetry_client.flush()
     if _conn is not None:
         _conn.close()
 
@@ -1127,6 +1145,19 @@ async def main() -> None:
         _SESSION_ID = _resolve_session_id(_conn)
     _telemetry.set_conn(_conn)
     _telemetry.reload_from_events()
+
+    telem_enabled = _config.get("telemetry_enabled", False)
+    telem_endpoint = _config.get("telemetry_endpoint", "")
+    if telem_endpoint and not telem_enabled:
+        telem_enabled = os.environ.get("OPENPLAN_TELEMETRY_ENABLED", "").lower() in ("1", "true", "yes")
+    if not telem_endpoint:
+        telem_endpoint = os.environ.get("OPENPLAN_TELEMETRY_ENDPOINT", "")
+    if telem_enabled and telem_endpoint:
+        _telemetry_client.configure(telem_endpoint, True)
+        imported = _telemetry_client.fetch_calibration(_conn)
+        if imported:
+            _log.info("Telemetry: imported %d global calibration baselines from %s", imported, telem_endpoint)
+
     atexit.register(_shutdown)
 
     notifs = _maintenance_cycle(_conn, _config, _write_lock)

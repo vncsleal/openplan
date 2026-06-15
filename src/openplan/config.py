@@ -11,6 +11,7 @@ _CONFIG_SCHEMA_KEYS: set[str] = {
     "activation_weights", "learning", "embedding", "page_rank",
     "stale_branch_hours", "recommend_weights", "maintenance_interval_minutes",
     "adaptive_weights", "insight_similarity_threshold",
+    "telemetry_enabled", "telemetry_endpoint",
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
