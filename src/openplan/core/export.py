@@ -196,17 +196,46 @@ def prune(
 
         collapsed_count = len(all_descendants)
         collapsed_edges = 0
+        project = node["project"]
         for did in all_descendants:
             e_cnt = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM edges WHERE source_id = ? OR target_id = ?",
                 (did, did),
             ).fetchone()["cnt"]
             collapsed_edges += e_cnt
+            drow = conn.execute("SELECT label FROM nodes WHERE id = ?", (did,)).fetchone()
+            if drow and drow["label"]:
+                for row in conn.execute(
+                    "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
+                    (project,),
+                ).fetchall():
+                    cr = row["criterion"].lower()
+                    dl = drow["label"].lower()
+                    if cr in dl or dl in cr:
+                        conn.execute(
+                            "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                            "WHERE project = ? AND criterion = ?",
+                            (now, did, project, row["criterion"]),
+                        )
             conn.execute("DELETE FROM evidence WHERE state_id = ?", (did,))
             conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", (did, did))
             conn.execute("DELETE FROM nodes WHERE id = ?", (did,))
 
-        summary = summary_label or f"Pruned: {node['label']}"
+        label_src = node["label"]
+        if label_src:
+            for row in conn.execute(
+                "SELECT criterion FROM goal_markers WHERE project = ? AND achieved = 0",
+                (project,),
+            ).fetchall():
+                cr = row["criterion"].lower()
+                ls = label_src.lower()
+                if cr in ls or ls in cr:
+                    conn.execute(
+                        "UPDATE goal_markers SET achieved = 1, achieved_at = ?, achieved_by = ? "
+                        "WHERE project = ? AND criterion = ?",
+                        (now, state_id, project, row["criterion"]),
+                    )
+        summary = summary_label or f"Pruned: {label_src}"
         conn.execute(
             "UPDATE nodes SET label = ?, status = 'done', updated_at = ?, props = json_set(props, '$.pruned_meta', ?) WHERE id = ?",
             (summary, now, json.dumps({"collapsed_nodes": collapsed_count, "collapsed_edges": collapsed_edges}), state_id),
