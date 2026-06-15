@@ -497,6 +497,13 @@ def act(
             conn.execute("UPDATE nodes SET props = ?, updated_at = ? WHERE id = ?",
                          (json.dumps(merged), _now(), target_id))
         project_type = src.get("project_type", "") or ""
+        if not project_type:
+            p_row = conn.execute(
+                "SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+                (src["project"],),
+            ).fetchone()
+            if p_row:
+                project_type = p_row["project_type"] or ""
         _update_cost_baseline(src["project"], project_type, action, cost_value, edge.get("cost_risk", 0.1), conn)
         _prune_stale_branches(state_id, conn, session_id)
         conn.execute("UPDATE nodes SET status = 'done', updated_at = ? WHERE id = ? AND status NOT IN ('blocked', 'superseded')", (_now(), state_id))
@@ -585,6 +592,13 @@ def branch(
             opt_by_sid[sid] = opt
             action = opt["action"]
             src_type = src["project_type"] if src["project_type"] else ""
+            if not src_type:
+                p_row = conn.execute(
+                    "SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+                    (project,),
+                ).fetchone()
+                if p_row:
+                    src_type = p_row["project_type"] or ""
             expected = opt.get("expected_cost")
             if expected and "tokens" in expected:
                 cost_tokens = expected["tokens"]
