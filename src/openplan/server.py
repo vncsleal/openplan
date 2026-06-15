@@ -406,7 +406,7 @@ async def _handle_act(args: dict) -> CallToolResult:
                 result = {"ok": True, "state_id": target_id, "evidence_stored": True}
             else:
                 evidence_rows = [dict(r) for r in conn.execute(
-                    "SELECT id, evidence_type, uri, description, status, created_at FROM evidence WHERE state_id = ? ORDER BY created_at",
+                    "SELECT id, evidence_type, uri, description, status, metadata, created_at FROM evidence WHERE state_id = ? ORDER BY created_at",
                     (target_id,),
                 ).fetchall()]
                 result = {"ok": True, "state_id": target_id, "evidence": evidence_rows}
