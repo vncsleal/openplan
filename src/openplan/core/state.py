@@ -724,9 +724,22 @@ def branch(
             )
             states_created.append(sid)
 
+        has_depends = any(opt.get("depends_on") for opt in options)
         has_user_sequence = any(opt.get("sequence") is not None for opt in options)
         if parallel:
             pass
+        elif has_depends:
+            label_to_sid = {opt.get("label", ""): sid for sid, opt in opt_by_sid.items()}
+            for sid, opt in opt_by_sid.items():
+                deps = opt.get("depends_on")
+                if deps:
+                    for dep_label in deps if isinstance(deps, list) else [deps]:
+                        dep_sid = label_to_sid.get(dep_label)
+                        if dep_sid:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO edges (source_id, target_id, action, cost_tokens, cost_risk, prob, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (dep_sid, sid, opt.get("action", "implement"), 1000, 0.1, 0.9, now, now),
+                            )
         elif has_user_sequence:
             sequenced = [(opt, sid) for sid, opt in opt_by_sid.items() if opt.get("sequence") is not None]
             sequenced.sort(key=lambda x: x[0]["sequence"])
