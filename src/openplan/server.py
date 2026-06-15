@@ -346,7 +346,7 @@ async def _handle_complete(args: dict) -> CallToolResult:
 
         # Find next phase: sequential edge from this state
         next_edge = conn.execute(
-            "SELECT e.target_id, e.action, n.label FROM edges e "
+            "SELECT e.target_id, e.action, e.cost_tokens, n.label FROM edges e "
             "JOIN nodes n ON n.id = e.target_id "
             "WHERE e.source_id = ? AND e.action IS NOT NULL "
             "AND NOT EXISTS (SELECT 1 FROM nodes n2 WHERE n2.id = e.target_id AND n2.status = 'done') "
@@ -361,10 +361,12 @@ async def _handle_complete(args: dict) -> CallToolResult:
         }
 
         if next_edge:
-            # Traverse to next phase
+            # Traverse to next phase — pass expected_cost from edge for retro calibration
             actual_cost = args.get("actual_cost")
+            edge_cost = next_edge["cost_tokens"] if next_edge.get("cost_tokens") else None
             act_result = _act(state_id, next_edge["action"], conn, _config,
                              target=next_edge["target_id"],
+                             expected_cost={"tokens": edge_cost, "risk": 0.1} if edge_cost else None,
                              actual_cost=actual_cost,
                              session_id=_SESSION_ID)
             if act_result.get("next_state"):
