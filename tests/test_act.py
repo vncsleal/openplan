@@ -280,6 +280,27 @@ def test_goal_match_full_string_only(conn: sqlite3.Connection, config: dict) -> 
     assert not _goal_match("deploy db", "Setup project"), "no overlap"
 
 
+def test_satisfies_goal_directly_ticks_marker(conn: sqlite3.Connection, config: dict) -> None:
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "implement"),
+    )
+    conn.execute(
+        "INSERT INTO goal_markers (project, criterion) VALUES (?, ?)",
+        ("test", "deploy"),
+    )
+    conn.execute(
+        "UPDATE goal_markers SET achieved = 1 WHERE project = ? AND LOWER(criterion) = LOWER(?)",
+        ("test", "implement"),
+    )
+    markers = conn.execute(
+        "SELECT criterion, achieved FROM goal_markers WHERE project = ? ORDER BY criterion",
+        ("test",),
+    ).fetchall()
+    assert markers[0]["achieved"] == 0, "deploy marker should remain unachieved"
+    assert markers[1]["achieved"] == 1, "implement marker should be ticked by satisfies_goal"
+
+
 def test_act_reasoning_existing_state(conn: sqlite3.Connection, config: dict) -> None:
     src = _make_node(conn)
     tgt = _make_node(conn)
