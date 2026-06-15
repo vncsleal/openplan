@@ -212,13 +212,16 @@ def _detect_cycle(conn: sqlite3.Connection, source_id: str, target_id: str, acti
 
 
 def _parse_goal_markers(goal: str) -> list[str]:
-    parts = re.split(r'[,;.]+', goal)
+    # Replace parenthetical lists like (memory, Redis) with a placeholder to avoid splitting commas inside parens
+    paren_re = re.compile(r'\([^)]*\)')
+    processed = paren_re.sub(lambda m: m.group(0).replace(",", " and"), goal)
+    parts = re.split(r'[,;.]+', processed)
     markers: list[str] = []
     for p in parts:
         p = p.strip().lower()
         if not p:
             continue
-        for prefix in ("that ", "which ", "a ", "an ", "the "):
+        for prefix in ("that ", "which ", "a ", "an ", "the ", "and "):
             if p.startswith(prefix):
                 p = p[len(prefix):]
                 break
@@ -256,6 +259,9 @@ def _infer_action(label: str) -> str:
     return "implement"
 
 
+_POSITION_ACTIONS: list[str] = ["design", "implement", "implement", "test", "deploy"]
+
+
 def generate_phases(goal: str, project_type: str, conn: sqlite3.Connection) -> list[dict]:
     markers = _parse_goal_markers(goal)
     seen: set[str] = set()
@@ -286,6 +292,14 @@ def generate_phases(goal: str, project_type: str, conn: sqlite3.Connection) -> l
                 "action": action,
                 "expected_cost": {"tokens": cost, "risk": 0.1},
             })
+    # Distribute action types by position to avoid single-action-type calibration pollution
+    phase_count = len(phases)
+    if phase_count > 1:
+        for i, ph in enumerate(phases):
+            pos_action = _POSITION_ACTIONS[i] if i < len(_POSITION_ACTIONS) else "implement"
+            if ph["action"] != pos_action:
+                ph["action"] = pos_action
+                ph["expected_cost"]["tokens"] = _get_default_cost(pos_action, project_type, conn)
     return phases
 
 

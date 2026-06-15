@@ -321,9 +321,21 @@ async def _handle_complete(args: dict) -> CallToolResult:
                             f"Cannot complete {state_id} ('{label_text}'): file evidence '{ev['uri']}' not found on disk. "
                             "Set auto_verify=false to bypass.")
 
+        # Look up expected_cost from the edge that arrived at this state (for retro calibration)
+        incoming_edge = conn.execute(
+            "SELECT e.cost_tokens, e.action FROM edges e WHERE e.target_id = ? ORDER BY e.updated_at DESC LIMIT 1",
+            (state_id,),
+        ).fetchone()
+        expected = None
+        if incoming_edge:
+            expected = {"tokens": incoming_edge["cost_tokens"], "risk": 0.1}
+
         # Mark state as done with evidence and actual cost
+        actual_cost = args.get("actual_cost")
         done_result = _act(state_id, action, conn, _config, kind="status",
                           status="done", evidence=args.get("evidence"),
+                          expected_cost=expected,
+                          actual_cost=actual_cost,
                           postconditions=args.get("postconditions"),
                           session_id=_SESSION_ID)
 
@@ -375,7 +387,7 @@ async def _handle_complete(args: dict) -> CallToolResult:
 
         # Include project health snapshot
         from openplan.core.graph import _graph_health as _gh
-        health = _gh(project, conn, _config)
+        health = _gh(project, conn, state_id)
         result["project_health"] = health
 
         need_notify = True
