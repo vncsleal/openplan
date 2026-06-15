@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
@@ -417,28 +416,6 @@ def diagnostics(project: str, conn: sqlite3.Connection, config: dict[str, Any] |
         "SELECT id FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
         (project,),
     ).fetchone()
-    if auto_fix and root:
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        for issue in h["issues"]:
-            if issue["code"] == "HIGH_ORPHAN_COUNT" and fixes_applied < 10:
-                for orphan in h["orphans"][:5]:
-                    if orphan["id"] == root["id"]:
-                        continue
-                    conn.execute(
-                        "INSERT OR IGNORE INTO edges (source_id, target_id, action, prob, created_at, updated_at) VALUES (?, ?, 'implement', 0.5, ?, ?)",
-                        (orphan["id"], root["id"], now, now),
-                    )
-                    fixes_applied += 1
-        if fixes_applied and root:
-            eid = conn.execute("SELECT COALESCE(MAX(CAST(SUBSTR(id, 3) AS INTEGER)), 0) + 1 FROM events").fetchone()[0]
-            ikey = hashlib.sha256(f"{root['id']}:auto_fix".encode()).hexdigest()[:32]
-            conn.execute(
-                "INSERT OR IGNORE INTO events (id, project, node_id, event_type, payload, version, idempotency_key, session_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, '', ?)",
-                (f"E-{eid:06d}", project, root["id"], "auto_fix",
-                 json.dumps({"fixes_applied": fixes_applied, "issue_codes": [i["code"] for i in h["issues"]]}),
-                 ikey, now),
-            )
 
     result: dict[str, Any] = {
         "project": project,

@@ -75,9 +75,9 @@ def test_run_cycle_auto_fix_orphans(conn: sqlite3.Connection, config: dict, writ
     conn.commit()
     notifs = _run_cycle(conn, config, write_lock)
     fix_notifs = [n for n in notifs if n["code"] == "AUTO_FIX"]
-    assert len(fix_notifs) > 0
+    assert len(fix_notifs) == 0  # auto-fix removed — was creating cycle-breaking edges
     edges_after = conn.execute("SELECT COUNT(*) AS cnt FROM edges").fetchone()["cnt"]
-    assert edges_after > 0
+    assert edges_after == 0
 
 
 def test_run_cycle_with_compress(conn: sqlite3.Connection, config: dict, write_lock: threading.Lock) -> None:
