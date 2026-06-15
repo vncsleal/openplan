@@ -249,6 +249,7 @@ def init_project(project: str, label: str | None, conn: sqlite3.Connection, sess
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
                     (f"goal:{project}", json.dumps({"text": goal, "target_state_id": None})),
                 )
+                conn.execute("DELETE FROM goal_markers WHERE project = ?", (project,))
                 _insert_goal_markers(project, goal, conn)
                 _record_event(conn, existing["id"], project, "goal_set", {"goal": goal}, session_id)
             if project_type:

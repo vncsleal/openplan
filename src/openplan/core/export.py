@@ -19,7 +19,11 @@ def _goal_match(criterion: str, label: str) -> bool:
     cw = cl.split()
     lw = ll.split()
     for c in cw:
+        if len(c) < 3:
+            continue
         for w in lw:
+            if len(w) < 3:
+                continue
             if c in w or w in c:
                 return True
     return False

@@ -220,7 +220,11 @@ def _check_goal_markers(conn: Any, project: str, state_id: str, label: str, time
         matched = criterion_lower in label_lower or label_lower in criterion_lower
         if not matched:
             for cw in criterion_words:
+                if len(cw) < 3:
+                    continue
                 for lw in label_words:
+                    if len(lw) < 3:
+                        continue
                     if cw in lw or lw in cw:
                         matched = True
                         break
