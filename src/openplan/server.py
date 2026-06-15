@@ -455,10 +455,13 @@ async def _handle_act(args: dict) -> CallToolResult:
             target_input = args.get("target") or source
             target_id = _resolve_target_id(project, target_input, conn)
             result = _act(target_id, action, conn, _config, kind="revert", session_id=_SESSION_ID)
+            if not result.get("ok"):
+                return err("REVERT_FAILED", result.get("error", "revert returned no cursor"))
             need_notify = True
             did_mutate = True
         elif action == "prune":
-            target_id = args.get("target") or source
+            target_input = args.get("target") or source
+            target_id = _resolve_target_id(project, target_input, conn)
             result = _prune(target_id, conn, _config, summary_label=args.get("summary_label"), keep_events=args.get("keep_events", False), session_id=_SESSION_ID)
             need_notify = bool(result.get("ok"))
             if result.get("ok"):
