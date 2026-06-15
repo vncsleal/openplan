@@ -1,69 +1,54 @@
-# OpenPlan v0.6.0 — Session Handoff
+# OpenPlan v0.7.0 — Session Handoff
 
-**Date:** 2026-06-14
+**Date:** 2026-06-15
 **Next session should read this first.**
 
-## What Changed (v0.6.0)
+## What Changed (v0.7.0)
 
-### Fix: Inverted Goal-Evidence Matching
-`verify` action now checks `? LIKE '%' || criterion || '%'` (evidence description contains criterion) instead of `criterion LIKE '%description%'`. Goal markers can actually be achieved by verify now.
+### Evidence Filesystem Verification
+`verify` now stats file URIs to confirm they actually exist on disk before marking them verified:
+- File found → `status = 'verified'`, metadata recorded (size, mtime)
+- File missing → `status = 'unverified'`, error stored in metadata
+- Only `type: "file"` evidence is stat'd; other types (commit, test, checkpoint) remain `verified`
+- The goal-marker matching loop already filters on `status = 'verified'`, so only real files trigger goal achievement
 
-### Fix: Version Triplication
-Single source of truth at `openplan.__init__.VERSION`, read via `importlib.metadata`. Server, export, and package all report the same version.
-
-### Fix: Dead `detail` Param Removed from `act`
-The `detail: boolean` parameter on the `act` tool was never wired in the handler. Removed.
-
-### Feature: Sequential Options
-`options` items on `act()` now support a `sequence: integer` field. When present, `branch()` creates sequential edges from option[n] to option[n+1], producing a chained DAG instead of flat sibling states:
-
-```python
-# Before: flat star (depth=1)
-act(options=[{label: A}, {label: B}, {label: C}])
-# root -> A, root -> B, root -> C
-
-# After: sequential chain (depth=3)
-act(options=[{label: A, sequence: 1}, {label: B, sequence: 2}, {label: C, sequence: 3}])
-# root -> A -> B -> C
+### Sequential Defaults for Branch Options
+Options now auto-sequence by default:
 ```
-
-### Feature: Auto-Check Goal Markers on State Completion
-When `status="done"` is set (via status update), the server handler scans the state label against unachieved goal markers. Any match auto-achieves the marker. No separate `verify` call needed for simple label-based goals.
-
-### Feature: `project_complete` Flag
-`recommend()` returns `project_complete: true` when all goal markers are achieved. Agents can check this to know when a project is finished.
+act(options=[{label: A}, {label: B}, {label: C}])
+# v0.6.0: root → A, root → B, root → C  (flat, depth=1)
+# v0.7.0: root → A → B → C               (chain, depth=3)
+```
+Use `parallel: true` for flat siblings (old default):
+```
+act(options=[{label: A}, {label: B}, {label: C}], parallel=true)
+# root → A, root → B, root → C  (flat)
+```
+The `sequence` field overrides positioning within the chain.
 
 ## Files Changed
 
 | File | What |
 |------|------|
-| `server.py:351-355` | Fix inverted LIKE direction in evidence matching |
-| `server.py:320-335` | Auto-check goal markers on state completion |
-| `server.py:545-550` | `project_complete` flag in recommend output |
-| `__init__.py` | New: single-source version via importlib.metadata |
-| `server.py:913` | Now uses `VERSION` import |
-| `export.py:68` | Now uses `VERSION` import |
-| `tools/definitions.py:77` | Removed dead `detail` param from act |
-| `tools/definitions.py:68` | Added `sequence` to options item schema |
-| `core/state.py:509-524` | Fix: goal_satisfied requires ALL markers (not any single one) |
-| `core/state.py:568-586` | Sequence chaining logic in `branch()` |
-| `tools/definitions.py` | Added `export` tool (was in handlers but not listed), added `sequence` to options |
-| `server.py:545-550` | Fixed `project_complete` flag (was only set for `recommend`, now consistent across all paths) |
-| `tests/test_act.py` | +2 tests: goal marker label matching, evidence matching direction |
-| `tests/test_branch.py` | +1 test: sequenced options produce chained graph |
-| `tests/test_export.py` | +1 test: version consistency |
-| `pyproject.toml` | Version 0.6.0 |
-| `CHANGELOG.md` | 0.5.0 + 0.6.0 entries |
+| `server.py:345-367` | Stat evidence URIs on verify; conditional status; metadata JSON |
+| `db/schema.py:165` | New `metadata TEXT DEFAULT '{}'` column on evidence table |
+| `db/schema.py:174-176` | ALTER TABLE migration for existing databases |
+| `core/state.py:594-614` | Auto-sequence when no `sequence` fields and not `parallel` |
+| `tools/definitions.py:68` | Added `parallel` param; updated options description |
+| `server.py:295` | Pass `parallel` from args to `branch()` |
+| `tests/test_act.py` | +3 evidence stat tests (existing, missing, metadata) |
+| `tests/test_diagnostics.py` | Updated flat tree assertions; new `test_diagnostics_parallel_tree` |
 
 ## Quick Commands
 
 ```bash
 .venv/bin/pip install -e ".[dev]"         # reinstall after changes
-.venv/bin/python -m pytest tests/ -v      # verify tests pass
+.venv/bin/python -m pytest tests/ -v      # 162 pass
 ```
 
 ## Next Priorities
 
-1. **Multi-cursor** — one graph, multiple cursors per project for concurrent agents
-2. **Evidence auto-verify** — watch for act(target="Implement...", thought="done") and auto-prompt for evidence
-3. **Workflow state machines** — encode the agent loop as a state machine in the graph itself
+1. **Visible effective costs** — surface bandit-adjusted costs in recommend output instead of raw cost_tokens
+2. **Goal marker parser improvements** — handle more natural phrasing in goal text splitting
+3. **Multi-cursor** — one graph, multiple cursors per project for concurrent agents
+4. **Workflow state machines** — encode the agent loop as a state machine in the graph itself

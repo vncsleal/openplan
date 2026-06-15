@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 (2026-06-15)
+
+- Evidence filesystem verification: `verify` now stats file URIs to confirm existence. Missing files get `status=unverified` instead of `verified`. Metadata (size, mtime) recorded per evidence.
+- Sequential defaults: `options` on `act()` auto-sequences items (0→1→2→...) instead of creating flat siblings. Use `parallel=true` for explicit fan-out. The `sequence` field becomes an order override, not the only way to chain.
+- Test coverage: 3 new tests for evidence stat verification (existing file, missing file, metadata). 162 total.
+
 ## 0.6.0 (2026-06-14)
 
 - Sequential options: `options` on `act()` now support `sequence` field to create ordered DAG chains instead of flat siblings.
