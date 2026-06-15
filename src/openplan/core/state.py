@@ -236,6 +236,92 @@ def _insert_goal_markers(project: str, goal: str, conn: sqlite3.Connection) -> N
         )
 
 
+_ACTION_KEYWORDS: list[tuple[str, str]] = [
+    ("research", "research"), ("explore", "explore"), ("analyze", "analyze"),
+    ("investigate", "investigate"), ("design", "design"), ("architect", "design"),
+    ("plan", "plan"), ("test", "test"), ("verify", "test"),
+    ("validate", "test"), ("check", "test"), ("document", "document"),
+    ("write_docs", "document"), ("implement", "implement"),
+    ("build", "implement"), ("create", "implement"), ("write", "implement"),
+    ("add", "implement"), ("deploy", "deploy"), ("release", "deploy"),
+    ("ship", "deploy"), ("publish", "deploy"),
+]
+
+
+def _infer_action(label: str) -> str:
+    lowered = label.lower()
+    for keyword, action in _ACTION_KEYWORDS:
+        if keyword in lowered:
+            return action
+    return "implement"
+
+
+def generate_phases(goal: str, project_type: str, conn: sqlite3.Connection) -> list[dict]:
+    markers = _parse_goal_markers(goal)
+    seen: set[str] = set()
+    phases: list[dict] = []
+    for marker in markers:
+        dedup_key = marker.strip().lower()
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        action = _infer_action(marker)
+        cost = _get_default_cost(action, project_type, conn)
+        phases.append({
+            "label": marker,
+            "action": action,
+            "expected_cost": {"tokens": cost, "risk": 0.1},
+        })
+    if not phases:
+        default_phases = [
+            ("Design architecture", "design"),
+            ("Implement core logic", "implement"),
+            ("Write test suite", "test"),
+            ("Build and publish", "deploy"),
+        ]
+        for label, action in default_phases:
+            cost = _get_default_cost(action, project_type, conn)
+            phases.append({
+                "label": label,
+                "action": action,
+                "expected_cost": {"tokens": cost, "risk": 0.1},
+            })
+    return phases
+
+
+def plan_project(project: str, goal: str, conn: sqlite3.Connection, session_id: str = "", project_type: str = "", label: str | None = None) -> dict:
+    init_result = init_project(project, label, conn, session_id=session_id, project_type=project_type, goal=goal)
+    root_id = init_result["state_id"]
+    phases = generate_phases(goal, project_type, conn)
+    branch_result = None
+    first_phase_id = root_id
+    if phases:
+        branch_result = branch(root_id, phases, conn, {"activation_sensitivity": 0.5, "learning_rate": 0.2, "tune_interval": 10}, session_id=session_id)
+        first_phase_id = branch_result["states_created"][0]
+
+    phases_out = []
+    for i, ph in enumerate(phases):
+        sid = branch_result["states_created"][i] if branch_result else root_id
+        phases_out.append({
+            "state_id": sid,
+            "label": ph["label"],
+            "action": ph["action"],
+            "estimated_cost": ph["expected_cost"],
+        })
+
+    return {
+        "ok": True,
+        "project": project,
+        "state_id": root_id,
+        "label": label or project,
+        "project_type": project_type,
+        "goal": goal,
+        "phases": phases_out,
+        "total_estimated_cost": sum(p["expected_cost"]["tokens"] for p in phases),
+        "cursor": first_phase_id,
+    }
+
+
 def init_project(project: str, label: str | None, conn: sqlite3.Connection, session_id: str = "", project_type: str = "", goal: str = "") -> dict[str, Any]:
     owned_init = _safe_savepoint(conn, "init_tx")
     try:
@@ -457,7 +543,11 @@ def act(
                 "SELECT * FROM edges WHERE source_id = ? AND action = ?", (state_id, action)
             ).fetchall()
             if not matching:
-                raise InvalidActionError(state_id, action)
+                available = conn.execute(
+                    "SELECT e.action, e.target_id, COALESCE(n.label, '') AS label FROM edges e LEFT JOIN nodes n ON n.id = e.target_id WHERE e.source_id = ? ORDER BY e.prob DESC LIMIT 16",
+                    (state_id,),
+                ).fetchall()
+                raise InvalidActionError(state_id, action, [(r["action"], r["target_id"], r["label"]) for r in available])
             if len(matching) > 1:
                 matching = sorted(matching, key=lambda e: (-e["prob"], e["cost_tokens"]))
             target_id = dict(matching[0])["target_id"]
@@ -467,13 +557,21 @@ def act(
             (state_id, target_id, action),
         ).fetchone()
         if not edge:
-            raise InvalidActionError(state_id, action)
+            available = conn.execute(
+                "SELECT e.action, e.target_id, COALESCE(n.label, '') AS label FROM edges e LEFT JOIN nodes n ON n.id = e.target_id WHERE e.source_id = ? ORDER BY e.prob DESC LIMIT 16",
+                (state_id,),
+            ).fetchall()
+            raise InvalidActionError(state_id, action, [(r["action"], r["target_id"], r["label"]) for r in available])
         edge = dict(edge)
 
         _check_preconditions(edge, conn)
 
         if _detect_cycle(conn, state_id, target_id, action):
-            raise CycleDetectedError(state_id, target_id)
+            available = conn.execute(
+                "SELECT e.action, e.target_id, COALESCE(n.label, '') AS label FROM edges e LEFT JOIN nodes n ON n.id = e.target_id WHERE e.source_id = ? AND e.target_id != ? ORDER BY e.prob DESC LIMIT 16",
+                (state_id, target_id),
+            ).fetchall()
+            raise CycleDetectedError(state_id, target_id, [(r["action"], r["target_id"], r["label"]) for r in available])
 
         cost_value = actual_cost.get("tokens", edge.get("cost_tokens", 10000)) if actual_cost else edge.get("cost_tokens", 10000)
         cost_source = "agent" if actual_cost else "auto"

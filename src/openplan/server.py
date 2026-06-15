@@ -256,6 +256,23 @@ async def _handle_init(args: dict) -> CallToolResult:
     return ok(result, project=project)
 
 
+async def _handle_start(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    project = args["project"]
+    try:
+        from openplan.core.state import plan_project as _plan_project
+        result = _plan_project(project, args["goal"], _get_conn(), session_id=_SESSION_ID, project_type=args.get("project_type", ""), label=args.get("label"))
+        if result.get("cursor"):
+            _set_cursor(project, result["cursor"])
+    finally:
+        _write_lock_release()
+    if result.get("state_id"):
+        await _push_resource_notification(project)
+    return ok(result, project=project)
+
+
+
+
 async def _handle_act(args: dict) -> CallToolResult:
     project = args["project"]
     _write_lock_acquire()
@@ -716,6 +733,7 @@ async def _handle_export(args: dict) -> CallToolResult:
 
 HANDLERS = {
     "init": _handle_init,
+    "start": _handle_start,
     "act": _handle_act,
     "recommend": _handle_recommend,
     "export": _handle_export,

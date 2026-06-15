@@ -35,6 +35,37 @@ _DESTRUCTIVE = MCPToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 _TOOLS: list[MCPTool] = [
     t(
+        "start",
+        "One-call project kickoff. Initializes a project, parses the goal into phases, estimates costs for each phase from global baselines, creates the graph, and returns the full plan with cursor set to the first phase. Replaces a 3-call init+branch+recommend sequence.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "goal": {"type": "string", "maxLength": 500, "description": "Natural language description of the desired end state"},
+            "label": {"type": "string", "maxLength": 500, "description": "Optional root state label (defaults to project slug)"},
+            "project_type": {"type": "string", "maxLength": 100, "description": "Optional project type for cost baselines (e.g. 'python_cli', 'rust_library', 'web_app')"},
+        },
+        ["project", "goal"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "project": {"type": "string"},
+                "state_id": {"type": "string"},
+                "label": {"type": "string"},
+                "project_type": {"type": "string"},
+                "goal": {"type": "string"},
+                "phases": {"type": "array", "items": {"type": "object", "properties": {
+                    "state_id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "action": {"type": "string"},
+                    "estimated_cost": {"type": "object"},
+                }}},
+                "total_estimated_cost": {"type": "number"},
+                "cursor": {"type": "string"},
+            },
+            "required": ["ok", "project", "state_id", "phases"],
+        },
+    ),
+    t(
         "init",
         "Create a new project context. Idempotent — returns the existing root state if the project already exists. Call this once to bootstrap. Optionally set a project_type for cost baselines, and a goal describing the desired end state.",
         {
