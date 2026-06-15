@@ -8,6 +8,8 @@
 - Fix: Inverted goal-evidence matching — `verify` now correctly checks `description LIKE '%criterion%'` instead of `criterion LIKE '%description%'`.
 - Fix: Version triplication — single source of truth via `openplan.__init__.VERSION`.
 - Fix: Removed dead `detail` parameter from `act` tool definition.
+- Fix: goal_satisfied in act() now requires ALL markers achieved, not just any single one.
+- Fix: export tool missing from MCP tool listing — now listed as 4th official tool.
 - Tests: 6 new tests for goal markers, evidence matching, sequential options, version consistency.
 
 ## 0.5.0 (2026-06-14)

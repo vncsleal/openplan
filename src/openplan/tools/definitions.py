@@ -94,6 +94,27 @@ _TOOLS: list[MCPTool] = [
         },
     ),
     t(
+        "export",
+        "Export the full project graph as JSON, GraphML, or adjacency matrix. Use to inspect, visualize, or archive a project.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "format": {"type": "string", "enum": ["json", "graphml", "matrix"], "description": "Export format (default: json)"},
+        },
+        ["project"],
+        annotations=_READ_ONLY,
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "nodes": {"anyOf": [{"type": "array"}, {"type": "null"}]},
+                "edges": {"anyOf": [{"type": "array"}, {"type": "null"}]},
+                "events": {"anyOf": [{"type": "array"}, {"type": "null"}]},
+                "project": {"type": "string"},
+                "format": {"type": "string"},
+            },
+            "required": ["project"],
+        },
+    ),
+    t(
         "recommend",
         "The only read tool. Returns the best next target with A* path, project health, self-tuning state, estimation accuracy, and tree visualization. Use target to find a path to a specific state. Use top_k to compare alternatives. Use sequence to simulate forward. Use up_depth to see ancestor context.",
         {

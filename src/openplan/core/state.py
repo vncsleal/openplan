@@ -508,11 +508,15 @@ def act(
 
         goal_satisfied = None
         try:
-            gm = conn.execute(
-                "SELECT 1 FROM goal_markers WHERE project = ? AND achieved = 1 LIMIT 1",
+            achieved = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM goal_markers WHERE project = ? AND achieved = 1",
                 (src["project"],),
             ).fetchone()
-            if gm:
+            total = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM goal_markers WHERE project = ?",
+                (src["project"],),
+            ).fetchone()
+            if achieved and total and total["cnt"] > 0 and achieved["cnt"] == total["cnt"]:
                 goal_satisfied = True
                 conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",

@@ -45,7 +45,10 @@ When `status="done"` is set (via status update), the server handler scans the st
 | `export.py:68` | Now uses `VERSION` import |
 | `tools/definitions.py:77` | Removed dead `detail` param from act |
 | `tools/definitions.py:68` | Added `sequence` to options item schema |
+| `core/state.py:509-524` | Fix: goal_satisfied requires ALL markers (not any single one) |
 | `core/state.py:568-586` | Sequence chaining logic in `branch()` |
+| `tools/definitions.py` | Added `export` tool (was in handlers but not listed), added `sequence` to options |
+| `server.py:545-550` | Fixed `project_complete` flag (was only set for `recommend`, now consistent across all paths) |
 | `tests/test_act.py` | +2 tests: goal marker label matching, evidence matching direction |
 | `tests/test_branch.py` | +1 test: sequenced options produce chained graph |
 | `tests/test_export.py` | +1 test: version consistency |
