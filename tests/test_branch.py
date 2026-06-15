@@ -157,3 +157,31 @@ def test_branch_sequenced_options_chain_states(conn: sqlite3.Connection, config:
         "SELECT target_id FROM edges WHERE source_id = ?", (src,)
     ).fetchall()
     assert len(edges_from_src) == 3, "All 3 options still linked from source"
+
+
+def test_branch_depends_on_creates_dependency_edges(conn: sqlite3.Connection, config: dict) -> None:
+    src = _make_node(conn, project="test", label="Root")
+    options = [
+        {"label": "Design API", "action": "design"},
+        {"label": "Implement API", "action": "implement", "depends_on": ["Design API"]},
+        {"label": "Add logging", "action": "implement"},
+        {"label": "Test API", "action": "test", "depends_on": ["Implement API"]},
+    ]
+    result = branch(src, options, conn, config)
+    sid_by_label = {
+        conn.execute("SELECT label FROM nodes WHERE id = ?", (sid,)).fetchone()["label"]: sid
+        for sid in result["states_created"]
+    }
+    design_sid = sid_by_label["Design API"]
+    impl_sid = sid_by_label["Implement API"]
+    log_sid = sid_by_label["Add logging"]
+    test_sid = sid_by_label["Test API"]
+
+    deps_from_design = conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (design_sid,)).fetchall()
+    assert any(e["target_id"] == impl_sid for e in deps_from_design), "Design API → Implement API"
+
+    deps_from_impl = conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (impl_sid,)).fetchall()
+    assert any(e["target_id"] == test_sid for e in deps_from_impl), "Implement API → Test API"
+
+    deps_from_log = conn.execute("SELECT target_id FROM edges WHERE source_id = ?", (log_sid,)).fetchall()
+    assert len(deps_from_log) == 0, "Logging has no depends_on and no auto-sequence edges"

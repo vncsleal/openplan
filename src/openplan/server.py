@@ -46,6 +46,9 @@ from openplan.core.export import prune as _prune
 from openplan.core.simulate import simulate as _simulate
 from openplan.core.tree import build_tree as _tree
 from openplan.core.telemetry import get_telemetry
+from openplan.core.telemetry import capture as _capture_event
+from openplan.core.telemetry import ensure_schema as _ensure_telemetry_schema
+from openplan.core.telemetry import import_global_calibration as _import_calibration
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.tools.definitions import get_tools
@@ -187,6 +190,7 @@ def _get_fresh_notifications(project: str | None = None) -> list[dict]:
 def ok(data: dict[str, Any], project: str | None = None) -> CallToolResult:
     enriched = dict(data)
     enriched.setdefault("ok", True)
+    enriched.setdefault("version", VERSION)
     if project:
         cursor = _get_cursor(project)
         if cursor:
@@ -256,6 +260,175 @@ async def _handle_init(args: dict) -> CallToolResult:
     return ok(result, project=project)
 
 
+async def _handle_start(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    project = args["project"]
+    try:
+        from openplan.core.state import plan_project as _plan_project
+        result = _plan_project(project, args["goal"], _get_conn(), session_id=_SESSION_ID, project_type=args.get("project_type", ""), label=args.get("label"))
+        if result.get("cursor"):
+            _set_cursor(project, result["cursor"])
+    finally:
+        _write_lock_release()
+    if result.get("state_id"):
+        await _push_resource_notification(project)
+    return ok(result, project=project)
+
+
+async def _handle_complete(args: dict) -> CallToolResult:
+    _write_lock_acquire()
+    project = args["project"]
+    try:
+        conn = _get_conn()
+        state_input = args["state"]
+
+        # Resolve state: S-XXXXXX ID or label match
+        if re.match(r'^S-\d{6}$', state_input):
+            state_id = state_input
+        else:
+            label_match = conn.execute(
+                "SELECT id FROM nodes WHERE project = ? AND LOWER(label) = LOWER(?) ORDER BY created_at DESC LIMIT 1",
+                (project, state_input),
+            ).fetchone()
+            if not label_match:
+                label_match = conn.execute(
+                    "SELECT id FROM nodes WHERE project = ? AND LOWER(label) LIKE LOWER(?) ORDER BY created_at DESC LIMIT 1",
+                    (project, f"%{state_input}%"),
+                ).fetchone()
+            if not label_match:
+                return err("STATE_NOT_FOUND", f"No state matching '{state_input}' found in project '{project}'")
+            state_id = label_match["id"]
+
+        # Get state info to infer action from incoming edges
+        current_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (state_id,)).fetchone()
+        label_text = current_label["label"] if current_label else ""
+
+        # Find the action used to reach this state (prefer incoming edge from a non-root state)
+        incoming = conn.execute(
+            "SELECT e.action, e.source_id FROM edges e WHERE e.target_id = ? ORDER BY e.updated_at DESC LIMIT 5",
+            (state_id,),
+        ).fetchall()
+        action = incoming[0]["action"] if incoming else "implement"
+
+        # auto_verify check before marking done
+        auto_verify = args.get("auto_verify", False)
+        if auto_verify:
+            evidence_list = args.get("evidence", [])
+            for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                if ev.get("type") == "file" and ev.get("uri"):
+                    try:
+                        os.stat(ev["uri"])
+                    except OSError:
+                        return err("VERIFICATION_FAILED",
+                            f"Cannot complete {state_id} ('{label_text}'): file evidence '{ev['uri']}' not found on disk. "
+                            "Set auto_verify=false to bypass.")
+
+        # Look up expected_cost from the edge that arrived at this state (for retro calibration)
+        incoming_edge = conn.execute(
+            "SELECT e.cost_tokens, e.action FROM edges e WHERE e.target_id = ? ORDER BY e.updated_at DESC LIMIT 1",
+            (state_id,),
+        ).fetchone()
+        expected = None
+        if incoming_edge:
+            expected = {"tokens": incoming_edge["cost_tokens"], "risk": 0.1}
+
+        # Mark state as done with evidence and actual cost
+        actual_cost = args.get("actual_cost")
+        done_result = _act(state_id, action, conn, _config, kind="status",
+                          status="done", evidence=args.get("evidence"),
+                          expected_cost=expected,
+                          actual_cost=actual_cost,
+                          postconditions=args.get("postconditions"),
+                          session_id=_SESSION_ID)
+
+        # Check goal markers on completion
+        now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%fZ")
+        if label_text:
+            _check_goal_markers(conn, project, state_id, label_text, now_ts)
+
+        # Persist evidence (same logic as status handler path)
+        evidence_list = args.get("evidence")
+        if evidence_list:
+            import uuid as _uuid
+            for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                eid = str(_uuid.uuid4())[:8]
+                ev_type = ev.get("type", "checkpoint")
+                ev_uri = ev.get("uri", "")
+                ev_desc = ev.get("description", "")
+                ev_status = "verified"
+                metadata_ev = "{}"
+                if ev_type == "file" and ev_uri:
+                    try:
+                        st = os.stat(ev_uri)
+                        metadata_ev = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+                    except OSError:
+                        ev_status = "unverified"
+                        metadata_ev = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
+                conn.execute(
+                    "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (eid, project, state_id, ev_type, ev_uri, ev_desc, ev_status, metadata_ev, now_ts),
+                )
+
+        # Find next phase: sequential edge from this state
+        next_edge = conn.execute(
+            "SELECT e.target_id, e.action, e.cost_tokens, n.label FROM edges e "
+            "JOIN nodes n ON n.id = e.target_id "
+            "WHERE e.source_id = ? AND e.action IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM nodes n2 WHERE n2.id = e.target_id AND n2.status = 'done') "
+            "ORDER BY e.prob DESC, e.cost_tokens ASC LIMIT 1",
+            (state_id,),
+        ).fetchone()
+
+        result = {
+            "ok": True,
+            "completed_state": state_id,
+            "completed_label": label_text,
+        }
+
+        if next_edge:
+            # Traverse to next phase — pass expected_cost from edge for retro calibration
+            actual_cost = args.get("actual_cost")
+            try:
+                edge_cost = next_edge["cost_tokens"]
+            except (IndexError, KeyError, TypeError):
+                edge_cost = None
+            act_result = _act(state_id, next_edge["action"], conn, _config,
+                             target=next_edge["target_id"],
+                             expected_cost={"tokens": edge_cost, "risk": 0.1} if edge_cost is not None else None,
+                             actual_cost=actual_cost,
+                             session_id=_SESSION_ID)
+            if act_result.get("next_state"):
+                _set_cursor(project, act_result["next_state"])
+                result["next_state"] = act_result["next_state"]
+                result["next_label"] = next_edge["label"] or ""
+                result["next_action"] = next_edge["action"]
+
+            # Count remaining phases
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM nodes WHERE project = ? AND status IN ('pending', 'in_progress')",
+                (project,),
+            ).fetchone()
+            result["remaining_phases"] = remaining["cnt"] if remaining else 0
+            result["completed_plan"] = (remaining["cnt"] if remaining else 0) == 0
+        else:
+            _set_cursor(project, state_id)
+            result["completed_plan"] = True
+            result["remaining_phases"] = 0
+
+        # Include project health snapshot
+        from openplan.core.graph import _graph_health as _gh
+        health = _gh(project, conn, state_id)
+        result["project_health"] = health
+
+        need_notify = True
+    finally:
+        _write_lock_release()
+    if need_notify:
+        await _push_resource_notification(project)
+    return ok(result, project=project)
+
+
 async def _handle_act(args: dict) -> CallToolResult:
     project = args["project"]
     _write_lock_acquire()
@@ -283,10 +456,13 @@ async def _handle_act(args: dict) -> CallToolResult:
             target_input = args.get("target") or source
             target_id = _resolve_target_id(project, target_input, conn)
             result = _act(target_id, action, conn, _config, kind="revert", session_id=_SESSION_ID)
+            if not result.get("ok"):
+                return err("REVERT_FAILED", result.get("error", "revert returned no cursor"))
             need_notify = True
             did_mutate = True
         elif action == "prune":
-            target_id = args.get("target") or source
+            target_input = args.get("target") or source
+            target_id = _resolve_target_id(project, target_input, conn)
             result = _prune(target_id, conn, _config, summary_label=args.get("summary_label"), keep_events=args.get("keep_events", False), session_id=_SESSION_ID)
             need_notify = bool(result.get("ok"))
             if result.get("ok"):
@@ -341,6 +517,23 @@ async def _handle_act(args: dict) -> CallToolResult:
                     result = create_result
             else:
                 target_id = target_input or source
+                # auto_verify: refuse to mark done if file evidence doesn't exist on disk
+                auto_verify = args.get("auto_verify", False)
+                if auto_verify and status == "done":
+                    evidence_list = args.get("evidence", [])
+                    all_verified = True
+                    for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                        if ev.get("type") == "file" and ev.get("uri"):
+                            try:
+                                os.stat(ev["uri"])
+                            except OSError:
+                                all_verified = False
+                                break
+                    if not all_verified:
+                        return err("VERIFICATION_FAILED",
+                            f"Cannot mark {target_input or source} as done: file evidence failed disk verification. "
+                            "Set auto_verify=false to bypass, or provide valid file paths.")
+
                 result = _act(target_id, action, conn, _config, kind="status",
                              status=status, props_patch=args.get("props_patch"),
                              session_id=_SESSION_ID)
@@ -482,6 +675,22 @@ async def _handle_act(args: dict) -> CallToolResult:
                 _conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('self_tuning:act_count', ?)", (json.dumps(count),))
     finally:
         _write_lock_release()
+    if did_mutate and result.get("ok"):
+        project_type = conn.execute(
+            "SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+            (project,),
+        ).fetchone()
+        pt = (project_type["project_type"] or "") if project_type else ""
+        cost_actual = result.get("cost_actual", {})
+        if cost_actual:
+            _capture_event(
+                conn,
+                project_type=pt,
+                action=action,
+                actual_cost=cost_actual.get("tokens", 0),
+                expected_cost=args.get("expected_cost", {}).get("tokens") if args.get("expected_cost") else None,
+                outcome="success",
+            )
     if need_notify:
         await _push_resource_notification(project)
     if auto_tuned:
@@ -716,6 +925,8 @@ async def _handle_export(args: dict) -> CallToolResult:
 
 HANDLERS = {
     "init": _handle_init,
+    "start": _handle_start,
+    "complete": _handle_complete,
     "act": _handle_act,
     "recommend": _handle_recommend,
     "export": _handle_export,
@@ -980,6 +1191,14 @@ async def main() -> None:
         _SESSION_ID = _resolve_session_id(_conn)
     _telemetry.set_conn(_conn)
     _telemetry.reload_from_events()
+    _ensure_telemetry_schema(_conn)
+
+    telem_endpoint = _config.get("telemetry_endpoint", "") or os.environ.get("OPENPLAN_TELEMETRY_ENDPOINT", "")
+    if telem_endpoint:
+        imported = _import_calibration(_conn, telem_endpoint)
+        if imported:
+            _log.info("Telemetry: imported %d global calibration baselines from %s", imported, telem_endpoint)
+
     atexit.register(_shutdown)
 
     notifs = _maintenance_cycle(_conn, _config, _write_lock)

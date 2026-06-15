@@ -14,8 +14,15 @@ class InvalidStateError(OpenPlanError):
 
 
 class InvalidActionError(OpenPlanError):
-    def __init__(self, state_id: str, action: str) -> None:
-        super().__init__("INVALID_ACTION", f"No edge from {state_id} with action '{action}'")
+    def __init__(self, state_id: str, action: str, available: list[tuple[str, str, str]] | None = None) -> None:
+        if available:
+            items = "; ".join(f"'{a}' -> {t} ({l})" for a, t, l in available[:8])
+            if len(available) > 8:
+                items += f" — and {len(available) - 8} more"
+            msg = f"No edge from {state_id} with action '{action}'. Available: {items}"
+        else:
+            msg = f"State {state_id} has no outgoing edges with action '{action}'. This is a terminal or leaf state. Use 'complete' to finish it or 'revert' to go back."
+        super().__init__("INVALID_ACTION", msg)
 
 
 class TargetNotFoundError(OpenPlanError):
@@ -24,8 +31,15 @@ class TargetNotFoundError(OpenPlanError):
 
 
 class CycleDetectedError(OpenPlanError):
-    def __init__(self, state_id: str, target_id: str) -> None:
-        super().__init__("CYCLE_DETECTED", f"Acting {state_id} -> {target_id} would create a cycle")
+    def __init__(self, state_id: str, target_id: str, available: list[tuple[str, str, str]] | None = None) -> None:
+        if available:
+            items = "; ".join(f"'{a}' -> {t} ({l})" for a, t, l in available[:8])
+            if len(available) > 8:
+                items += f" — and {len(available) - 8} more"
+            msg = f"Acting {state_id} -> {target_id} would create a cycle. Try: {items}"
+        else:
+            msg = f"Acting {state_id} -> {target_id} would create a cycle. Use 'complete' to finish this phase or 'revert' to go back."
+        super().__init__("CYCLE_DETECTED", msg)
 
 
 class InvalidOutcomeError(OpenPlanError):

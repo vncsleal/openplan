@@ -35,6 +35,63 @@ _DESTRUCTIVE = MCPToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 _TOOLS: list[MCPTool] = [
     t(
+        "complete",
+        "Complete a phase and automatically advance to the next one. Marks the given state as done, attaches evidence, then traverses to the next sequential phase (if any) and returns the updated plan. Replaces a 3-call sequence: act(status=done) + act(target=next) + recommend.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "state": {"type": "string", "maxLength": 500, "description": "State ID (S-XXXXXX) or state label to mark as complete"},
+            "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Optional evidence items to attach to the completed state"},
+            "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent {tokens: number}. Calibrates the edge with real data."},
+            "auto_verify": {"type": "boolean", "description": "When true, stat-checks file-type evidence and refuses completion if files don't exist. Default false."},
+        },
+        ["project", "state"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "completed_state": {"type": "string"},
+                "next_state": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "next_label": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "next_action": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "completed_plan": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+                "remaining_phases": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                "project_health": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+            },
+            "required": ["ok", "completed_state"],
+        },
+    ),
+    t(
+        "start",
+        "One-call project kickoff. Initializes a project, parses the goal into phases, estimates costs for each phase from global baselines, creates the graph, and returns the full plan with cursor set to the first phase. Replaces a 3-call init+branch+recommend sequence.",
+        {
+            "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
+            "goal": {"type": "string", "maxLength": 500, "description": "Natural language description of the desired end state"},
+            "label": {"type": "string", "maxLength": 500, "description": "Optional root state label (defaults to project slug)"},
+            "project_type": {"type": "string", "maxLength": 100, "description": "Optional project type for cost baselines (e.g. 'python_cli', 'rust_library', 'web_app')"},
+        },
+        ["project", "goal"],
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "project": {"type": "string"},
+                "state_id": {"type": "string"},
+                "label": {"type": "string"},
+                "project_type": {"type": "string"},
+                "goal": {"type": "string"},
+                "phases": {"type": "array", "items": {"type": "object", "properties": {
+                    "state_id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "action": {"type": "string"},
+                    "estimated_cost": {"type": "object"},
+                }}},
+                "total_estimated_cost": {"type": "number"},
+                "cursor": {"type": "string"},
+            },
+            "required": ["ok", "project", "state_id", "phases"],
+        },
+    ),
+    t(
         "init",
         "Create a new project context. Idempotent — returns the existing root state if the project already exists. Call this once to bootstrap. Optionally set a project_type for cost baselines, and a goal describing the desired end state.",
         {
@@ -65,7 +122,7 @@ _TOOLS: list[MCPTool] = [
             "project": {"type": "string", "maxLength": 200, "description": "Project slug"},
             "action": {"type": "string", "maxLength": 200, "description": "Action verb (implement, research, design, etc.). Set to 'abandon', 'prune', 'revert', 'set_goal', or 'verify' for special operations."},
             "target": {"type": "string", "maxLength": 500, "description": "Target label or state ID. If it doesn't exist, it's created. Omit when using options."},
-            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "action": {"type": "string"}, "sequence": {"type": "integer", "description": "Optional order index. When set, creates sequential edges from option[n] to option[n+1]."}, "expected_cost": {"type": "object"}}, "required": ["label", "action"]}, "description": "Branch options — creates multiple child states from cursor in one call. Options are auto-sequenced (0→1→2→...). Use parallel=true for flat siblings, or set explicit sequence values to override order."},
+            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "action": {"type": "string"}, "sequence": {"type": "integer", "description": "Optional order index. When set, creates sequential edges from option[n] to option[n+1]."}, "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Optional list of option labels that this option depends on. Creates edges from each dependency to this option."}, "expected_cost": {"type": "object"}}, "required": ["label", "action"]}, "description": "Branch options — creates multiple child states from cursor in one call. Options are auto-sequenced (0→1→2→...). Use parallel=true for flat siblings, or set explicit sequence values to override order, or use depends_on to express dependencies between options."},
             "parallel": {"type": "boolean", "description": "When true, options create flat sibling states (no sequential chaining). Default false (auto-sequenced)."},
             "parent": {"type": "string", "maxLength": 20, "description": "Optional parent state ID. Creates target as child of this state instead of cursor."},
             "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "superseded"], "description": "Set cursor's status (replaces update_state for status changes). 'blocked' cascades to descendants."},
@@ -74,6 +131,7 @@ _TOOLS: list[MCPTool] = [
             "actual_cost": {"type": "object", "maxProperties": 10, "description": "Optional actual cost spent {tokens: number}. When provided, calibrates the edge with real data."},
             "postconditions": {"type": "object", "maxProperties": 20, "description": "Optional key-value pairs stored on the target state's props."},
             "evidence": {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string", "description": "Evidence type (file, commit, test, checkpoint, verification)"}, "uri": {"type": "string", "description": "File path, commit hash, test name, or URI"}, "description": {"type": "string", "description": "Human-readable description of what this evidence proves"}}, "required": ["type", "uri"]}, "description": "Evidence items linking a state to real artifacts. Used with action='verify' to attach proof of completion."},
+            "auto_verify": {"type": "boolean", "description": "When true and setting status='done', stat-checks all file-type evidence and refuses to mark done if files don't exist on disk. Default false (trust the agent)."},
             "satisfies_goal": {"type": "string", "description": "Goal criterion text to explicitly mark as achieved by this verification. Only used with action='verify'."},
             "thought": {"type": "string", "maxLength": 10000, "description": "Optional reasoning"},
             "dry_run": {"type": "boolean", "description": "When true, returns state info without mutating (replaces read_state for inspection)."},
