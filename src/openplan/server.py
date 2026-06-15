@@ -345,6 +345,30 @@ async def _handle_complete(args: dict) -> CallToolResult:
         if label_text:
             _check_goal_markers(conn, project, state_id, label_text, now_ts)
 
+        # Persist evidence (same logic as status handler path)
+        evidence_list = args.get("evidence")
+        if evidence_list:
+            import uuid as _uuid
+            for ev in evidence_list if isinstance(evidence_list, list) else [evidence_list]:
+                eid = str(_uuid.uuid4())[:8]
+                ev_type = ev.get("type", "checkpoint")
+                ev_uri = ev.get("uri", "")
+                ev_desc = ev.get("description", "")
+                ev_status = "verified"
+                metadata_ev = "{}"
+                if ev_type == "file" and ev_uri:
+                    try:
+                        st = os.stat(ev_uri)
+                        metadata_ev = json.dumps({"size": st.st_size, "mtime": st.st_mtime})
+                    except OSError:
+                        ev_status = "unverified"
+                        metadata_ev = json.dumps({"error": "file not found or inaccessible", "uri": ev_uri})
+                conn.execute(
+                    "INSERT INTO evidence (id, project, state_id, evidence_type, uri, description, status, metadata, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (eid, project, state_id, ev_type, ev_uri, ev_desc, ev_status, metadata_ev, now_ts),
+                )
+
         # Find next phase: sequential edge from this state
         next_edge = conn.execute(
             "SELECT e.target_id, e.action, e.cost_tokens, n.label FROM edges e "

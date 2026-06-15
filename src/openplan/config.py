@@ -16,7 +16,7 @@ _CONFIG_SCHEMA_KEYS: set[str] = {
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "stale_days": 2,
-    "reverse_penalty": 1.0,
+    "reverse_penalty": 3.0,
     "activation_weights": {
         "in_degree": 0.33,
         "frontier": 0.24,
