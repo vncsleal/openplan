@@ -656,6 +656,20 @@ async def _handle_recommend(args: dict) -> CallToolResult:
                 pass
         result["estimation_accuracy"] = est_acc
 
+        by_type: dict[str, dict[str, dict[str, Any]]] = {}
+        for r in conn.execute(
+            "SELECT project_type, action, cost_tokens, sample_count FROM cost_baselines "
+            "WHERE project IS NULL AND project_type != '' AND sample_count > 1"
+        ).fetchall():
+            pt = r["project_type"]
+            action = r["action"]
+            by_type.setdefault(pt, {})[action] = {
+                "avg_cost": r["cost_tokens"],
+                "samples": r["sample_count"],
+            }
+        if by_type:
+            result["estimation_by_type"] = by_type
+
         if query:
             pass
         elif target or (up_depth is not None and up_depth >= 0):
