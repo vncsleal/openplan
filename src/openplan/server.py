@@ -270,11 +270,11 @@ async def main() -> None:
     _telemetry.reload_from_events()
     _ensure_telemetry_schema(conn)
 
-    telem_endpoint = config.get("telemetry_endpoint", "") or os.environ.get("OPENPLAN_TELEMETRY_ENDPOINT", "")
-    if telem_endpoint:
-        imported = _import_calibration(conn, telem_endpoint)
+    api_url = config.get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
+    if api_url:
+        imported = _import_calibration(conn, api_url)
         if imported:
-            _log.info("Telemetry: imported %d global calibration baselines from %s", imported, telem_endpoint)
+            _log.info("Telemetry: imported %d global calibration baselines from %s", imported, api_url)
 
     atexit.register(_shutdown)
 

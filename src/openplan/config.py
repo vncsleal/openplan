@@ -26,8 +26,7 @@ CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "maintenance_interval_minutes": {"type": int, "default": 5, "min": 1, "max": 1440},
     "adaptive_weights": {"type": dict, "default": {}},
     "insight_similarity_threshold": {"type": float, "default": 0.7, "min": 0.0, "max": 1.0},
-    "telemetry_endpoint": {"type": str, "default": ""},
-    "telemetry_enabled": {"type": bool, "default": False},
+    "api_url": {"type": str, "default": ""},
 }
 
 
