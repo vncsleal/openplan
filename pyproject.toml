@@ -40,7 +40,7 @@ Source = "https://github.com/anomalyco/opencode/tree/main/docs/workflow/openplan
 Changelog = "https://github.com/anomalyco/opencode/blob/main/docs/workflow/openplan/CHANGELOG.md"
 
 [project.scripts]
-openplan-server = "openplan.server:main"
+openplan = "openplan.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

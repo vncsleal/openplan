@@ -1,0 +1,21 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      OPENPLAN_API_KEY:
+        type: string
+        description: API key for Pro tier (get one at openplan.ai)
+      OPENPLAN_API_URL:
+        type: string
+        description: Calibration API endpoint
+        default: https://api.openplan.ai
+  commandFunction: >-
+    (config) => ({
+      command: 'uvx',
+      args: ['openplan'],
+      env: {
+        OPENPLAN_API_KEY: config.OPENPLAN_API_KEY || '',
+        OPENPLAN_API_URL: config.OPENPLAN_API_URL || 'https://api.openplan.ai',
+      }
+    })
