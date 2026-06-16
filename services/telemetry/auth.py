@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
-import sqlite3
 import time
 from typing import Any
 
 import httpx
+
+from .db import get_key_usage
 
 RATE_LIMITS: dict[str, int] = {
     "free": 100,
@@ -152,13 +152,4 @@ def cancel_subscription(conn: Any, stripe_sub_id: str) -> None:
     conn.commit()
 
 
-def get_key_usage(conn: Any, api_key: str) -> dict[str, Any]:
-    row = conn.execute(
-        "SELECT COUNT(*) AS cnt, MIN(created_at) AS first_seen, MAX(created_at) AS last_seen FROM calibration_events WHERE api_key = ?",
-        (api_key,),
-    ).fetchone()
-    return {
-        "event_count": row["cnt"] if row else 0,
-        "first_seen": row["first_seen"] if row else None,
-        "last_seen": row["last_seen"] if row else None,
-    }
+
