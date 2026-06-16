@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 import math
-import sqlite3
+import os
 import time
-from collections import Counter
 from typing import Any
 
+# Use libsql (Turso) if URL is set, otherwise fall back to local sqlite3
+TURSO_URL = os.environ.get("OPENPLAN_DB_URL", "")
+if TURSO_URL:
+    import libsql
+    _create_conn = lambda: libsql.connect(url=TURSO_URL, auth_token=os.environ.get("OPENPLAN_DB_TOKEN", ""))
+else:
+    import sqlite3
+    _create_conn = lambda: sqlite3.connect(os.environ.get("OPENPLAN_DB_PATH", "telemetry.db"))
 
-def init_db(conn: sqlite3.Connection) -> None:
+
+def get_conn():
+    conn = _create_conn()
+    if not TURSO_URL and hasattr(conn, "row_factory"):
+        conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db(conn: Any) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS calibration_events (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +58,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def insert_event(conn: sqlite3.Connection, api_key: str, event: dict[str, Any]) -> None:
+def insert_event(conn: Any, api_key: str, event: dict[str, Any]) -> None:
     conn.execute(
         "INSERT INTO calibration_events (api_key, project_type, action, expected_cost, actual_cost, outcome, session_id, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -54,7 +69,7 @@ def insert_event(conn: sqlite3.Connection, api_key: str, event: dict[str, Any]) 
     )
 
 
-def get_calibration(conn: sqlite3.Connection, min_samples: int = 3, min_contributors: int = 1) -> list[dict[str, Any]]:
+def get_calibration(conn: Any, min_samples: int = 3, min_contributors: int = 1) -> list[dict[str, Any]]:
     cutoff = time.time() - 30 * 86400  # 30-day window by default
     rows = conn.execute("""
         SELECT project_type, action, actual_cost, api_key
@@ -114,7 +129,7 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
     return sorted_vals[f] * (c - k) + sorted_vals[c] * (k - f)
 
 
-def get_rate_limit(conn: sqlite3.Connection, api_key: str, window_seconds: int = 60) -> int:
+def get_rate_limit(conn: Any, api_key: str, window_seconds: int = 60) -> int:
     now = time.time()
     window_start = math.floor(now / window_seconds) * window_seconds
     row = conn.execute(
@@ -124,7 +139,7 @@ def get_rate_limit(conn: sqlite3.Connection, api_key: str, window_seconds: int =
     return row["count"] if row else 0
 
 
-def increment_rate_limit(conn: sqlite3.Connection, api_key: str, window_seconds: int = 60) -> None:
+def increment_rate_limit(conn: Any, api_key: str, window_seconds: int = 60) -> None:
     now = time.time()
     window_start = math.floor(now / window_seconds) * window_seconds
     conn.execute(
