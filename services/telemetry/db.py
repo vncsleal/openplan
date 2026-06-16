@@ -38,14 +38,48 @@ def init_db(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_cal_lookup ON calibration_events(project_type, action, created_at);
         CREATE INDEX IF NOT EXISTS idx_cal_api_key ON calibration_events(api_key, created_at);
     """)
-    conn.execute("""
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS api_keys (
             key         TEXT PRIMARY KEY,
+            user_id     TEXT NOT NULL DEFAULT '',
             tier        TEXT NOT NULL DEFAULT 'free',
             label       TEXT NOT NULL DEFAULT '',
             is_active   INTEGER NOT NULL DEFAULT 1,
             created_at  REAL NOT NULL
-        )
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+
+        CREATE TABLE IF NOT EXISTS users (
+            id          TEXT PRIMARY KEY,
+            github_id   INTEGER UNIQUE,
+            login       TEXT NOT NULL DEFAULT '',
+            email       TEXT NOT NULL DEFAULT '',
+            avatar_url  TEXT NOT NULL DEFAULT '',
+            created_at  REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS oauth_sessions (
+            device_code     TEXT PRIMARY KEY,
+            user_code       TEXT NOT NULL,
+            github_token    TEXT NOT NULL DEFAULT '',
+            access_token    TEXT NOT NULL DEFAULT '',
+            refresh_token   TEXT NOT NULL DEFAULT '',
+            state           TEXT NOT NULL DEFAULT 'pending',
+            created_at      REAL NOT NULL,
+            expires_at      REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_user_code ON oauth_sessions(user_code);
+
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            stripe_subscription_id TEXT PRIMARY KEY,
+            user_id                TEXT NOT NULL,
+            stripe_customer_id     TEXT NOT NULL,
+            tier                   TEXT NOT NULL DEFAULT 'pro',
+            status                 TEXT NOT NULL DEFAULT 'active',
+            current_period_end     REAL NOT NULL,
+            created_at             REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_subs_user ON subscriptions(user_id);
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rate_limits (
