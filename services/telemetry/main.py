@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -167,11 +169,14 @@ async def oauth_token(request: Request) -> dict[str, Any]:
         else:
             user_id = create_user(conn, gh_user["id"], gh_user.get("login", ""), gh_user.get("email", ""), gh_user.get("avatar_url", ""))
 
-        from openplan.core.utils import now
+        from datetime import datetime, timezone
         access_token = secrets.token_urlsafe(32)
         refresh_token = secrets.token_urlsafe(32)
 
         complete_oauth_session(conn, device_code, github_token, access_token, refresh_token)
+        # Clear GitHub token from DB after use — no longer needed
+        conn.execute("UPDATE oauth_sessions SET github_token = '' WHERE device_code = ?", (device_code,))
+        conn.commit()
 
         return {
             "access_token": access_token,
@@ -205,7 +210,6 @@ async def create_api_key(request: Request) -> dict[str, str]:
     if not session:
         raise HTTPException(status_code=401, detail="Invalid access token")
 
-    user = get_user_by_github_id(conn, dict(session).get("github_token"))
     user_row = conn.execute(
         "SELECT id FROM users WHERE id = (SELECT user_id FROM oauth_sessions WHERE access_token = ?)",
         (auth,),
@@ -218,10 +222,14 @@ async def create_api_key(request: Request) -> dict[str, str]:
 
 @app.post("/api/keys/revoke")
 async def revoke_key(request: Request) -> dict[str, bool]:
+    auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     body = await request.json()
     api_key = body.get("api_key", "")
     if not api_key:
         raise HTTPException(status_code=400, detail="Missing api_key")
+    # Only the key owner or an admin can revoke
+    if auth != api_key and auth != os.environ.get("OPENPLAN_ADMIN_KEY", ""):
+        raise HTTPException(status_code=403, detail="Forbidden")
     ok = revoke_api_key(conn, api_key)
     return {"ok": ok}
 
@@ -259,13 +267,21 @@ async def create_checkout(request: Request) -> dict[str, str]:
     if not price_id:
         raise HTTPException(status_code=400, detail=f"Unknown plan: {plan}")
 
+    ref_id = hashlib.sha256(api_key.encode()).hexdigest()[:16]
     session = stripe_sdk.checkout.Session.create(
         mode="subscription",
         line_items=[{"price": price_id, "quantity": 1}],
-        client_reference_id=api_key,
+        client_reference_id=ref_id,
         success_url=os.environ.get("CHECKOUT_SUCCESS_URL", "https://openplan.ai/success"),
         cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "https://openplan.ai/pricing"),
     )
+
+    # Map the ref_id back to the API key for webhook resolution
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        (f"stripe_ref:{ref_id}", api_key),
+    )
+    conn.commit()
 
     return {"checkout_url": session.url, "session_id": session.id}
 
@@ -289,10 +305,14 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        api_key = session.get("client_reference_id", "")
+        ref_id = session.get("client_reference_id", "")
         stripe_customer_id = session.get("customer", "")
         stripe_sub_id = session.get("subscription", "")
         tier = "pro"
+
+        # Look up API key from reference hash
+        ref_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"stripe_ref:{ref_id}",)).fetchone()
+        api_key = ref_row["value"] if ref_row else ""
 
         key_row = conn.execute("SELECT user_id FROM api_keys WHERE key = ?", (api_key,)).fetchone()
         if key_row and stripe_sub_id:
@@ -328,12 +348,13 @@ async def subscription_status(request: Request) -> dict[str, Any]:
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
 @app.post("/admin/keys")
-async def admin_create_key(tier: str = "free", label: str = "") -> dict[str, str]:
+async def admin_create_key(request: Request, tier: str = "free", label: str = "") -> dict[str, str]:
     admin_key = os.environ.get("OPENPLAN_ADMIN_KEY", "")
-    if admin_key:
-        key = generate_api_key(conn, tier=tier, label=label)
-        return {"api_key": key, "tier": tier, "label": label}
-    raise HTTPException(status_code=403, detail="Admin key not configured")
+    auth = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not admin_key or auth != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    key = generate_api_key(conn, tier=tier, label=label)
+    return {"api_key": key, "tier": tier, "label": label}
 
 
 if __name__ == "__main__":

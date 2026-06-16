@@ -24,22 +24,9 @@ async def handle_complete(args: dict) -> CallToolResult:
     try:
         conn = get_conn()
         state_input = args["state"]
-
-        if re.match(r'^S-\d{6}$', state_input):
-            state_id = state_input
-        else:
-            label_match = conn.execute(
-                "SELECT id FROM nodes WHERE project = ? AND LOWER(label) = LOWER(?) ORDER BY created_at DESC LIMIT 1",
-                (project, state_input),
-            ).fetchone()
-            if not label_match:
-                label_match = conn.execute(
-                    "SELECT id FROM nodes WHERE project = ? AND LOWER(label) LIKE LOWER(?) ORDER BY created_at DESC LIMIT 1",
-                    (project, f"%{state_input}%"),
-                ).fetchone()
-            if not label_match:
-                return err("STATE_NOT_FOUND", f"No state matching '{state_input}' found in project '{project}'")
-            state_id = label_match["id"]
+        state_id = _resolve_target_id(project, state_input, conn)
+        if state_id == state_input and not re.match(r'^S-\d{6}$', state_input):
+            return err("STATE_NOT_FOUND", f"No state matching '{state_input}' found in project '{project}'")
 
         current_label = conn.execute("SELECT label FROM nodes WHERE id = ?", (state_id,)).fetchone()
         label_text = current_label["label"] if current_label else ""

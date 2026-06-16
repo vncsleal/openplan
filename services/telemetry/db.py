@@ -69,6 +69,7 @@ def init_db(conn: Any) -> None:
             expires_at      REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_oauth_user_code ON oauth_sessions(user_code);
+        CREATE INDEX IF NOT EXISTS idx_oauth_access_token ON oauth_sessions(access_token);
 
         CREATE TABLE IF NOT EXISTS subscriptions (
             stripe_subscription_id TEXT PRIMARY KEY,

@@ -172,19 +172,28 @@ def cmd_subscribe(args: list[str]) -> None:
     print("Complete payment in the browser.")
 
     import time
-    while True:
-        time.sleep(3)
-        try:
-            resp = httpx.get(f"{api_url}/api/subscription/status", headers={
-                "Authorization": f"Bearer {api_key}",
-            }, timeout=10)
-            data = resp.json()
-            if data.get("status") == "active":
-                print("✓ Subscription active")
-                print(f"  Tier: {data.get('tier', 'pro')}")
-                return
-        except Exception:
-            pass
+    deadline = time.time() + 300  # 5 minute timeout
+    poll_count = 0
+    try:
+        while time.time() < deadline:
+            time.sleep(3)
+            poll_count += 1
+            if poll_count % 5 == 0:
+                print(f"  Waiting for payment... ({int(deadline - time.time())}s remaining)")
+            try:
+                resp = httpx.get(f"{api_url}/api/subscription/status", headers={
+                    "Authorization": f"Bearer {api_key}",
+                }, timeout=10)
+                data = resp.json()
+                if data.get("status") == "active":
+                    print("✓ Subscription active")
+                    print(f"  Tier: {data.get('tier', 'pro')}")
+                    return
+            except Exception:
+                pass
+        print("Timed out waiting for subscription. Complete payment at the Stripe page.")
+    except KeyboardInterrupt:
+        print("\nCancelled.")
 
 
 def cmd_status(args: list[str]) -> None:
