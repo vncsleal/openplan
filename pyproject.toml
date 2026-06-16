@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openplan"
+name = "openplan-mcp"
 version = "0.8.2"
-description = "AI-native state space planner — MCP server with state graphs, A* planning, and self-calibrating edge weights"
+description = "Waze for AI agents planning — MCP server that improves cost estimates by learning from every project"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

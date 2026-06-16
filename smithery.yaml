@@ -13,7 +13,7 @@ startCommand:
   commandFunction: >-
     (config) => ({
       command: 'uvx',
-      args: ['openplan'],
+      args: ['openplan-mcp'],
       env: {
         OPENPLAN_API_KEY: config.OPENPLAN_API_KEY || '',
         OPENPLAN_API_URL: config.OPENPLAN_API_URL || 'https://api.openplan.cc',
