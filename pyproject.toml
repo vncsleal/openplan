@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openplan-mcp"
-version = "0.8.2"
+version = "0.8.3"
 description = "Waze for AI agents planning — MCP server that improves cost estimates by learning from every project"
 readme = "README.md"
 license = {text = "MIT"}
