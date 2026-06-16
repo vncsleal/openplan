@@ -81,7 +81,7 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
     if current >= limit:
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded ({limit}/min for {tier} tier). Upgrade at openplan.ai",
+            detail=f"Rate limit exceeded ({limit}/min for {tier} tier). Upgrade at openplan.cc",
         )
 
     accepted = 0
@@ -272,8 +272,8 @@ async def create_checkout(request: Request) -> dict[str, str]:
         mode="subscription",
         line_items=[{"price": price_id, "quantity": 1}],
         client_reference_id=ref_id,
-        success_url=os.environ.get("CHECKOUT_SUCCESS_URL", "https://openplan.ai/success"),
-        cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "https://openplan.ai/pricing"),
+        success_url=os.environ.get("CHECKOUT_SUCCESS_URL", "https://openplan.cc/success"),
+        cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "https://openplan.cc/pricing"),
     )
 
     # Map the ref_id back to the API key for webhook resolution

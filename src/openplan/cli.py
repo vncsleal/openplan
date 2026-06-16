@@ -34,7 +34,7 @@ def _get_api_key() -> str | None:
 
 def cmd_auth_login(args: list[str]) -> None:
     """Authenticate with GitHub via device code flow."""
-    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.ai")
+    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.cc")
 
     print("Open the following URL in your browser and enter the code shown.")
     print()
@@ -114,7 +114,7 @@ def cmd_auth_logout(args: list[str]) -> None:
     """Remove stored credentials."""
     if CREDENTIALS_FILE.exists():
         CREDENTIALS_FILE.unlink()
-        api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.ai")
+        api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.cc")
         key = _get_api_key()
         if key:
             try:
@@ -151,7 +151,7 @@ def cmd_subscribe(args: list[str]) -> None:
         print("Run: openplan auth login")
         sys.exit(1)
 
-    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.ai")
+    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.cc")
     plan = args[0] if args else "pro"
 
     try:
@@ -199,7 +199,7 @@ def cmd_subscribe(args: list[str]) -> None:
 def cmd_status(args: list[str]) -> None:
     """Show OpenPlan status and sync info."""
     api_key = _get_api_key()
-    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.ai")
+    api_url = os.environ.get("OPENPLAN_API_URL", "https://api.openplan.cc")
 
     creds = _load_credentials()
     tier = creds.get("tier", "free") if not os.environ.get("OPENPLAN_API_KEY") else "pro (env)"
