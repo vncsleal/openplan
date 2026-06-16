@@ -30,6 +30,7 @@ from openplan.core.maintenance import _run_cycle as _maintenance_cycle
 from openplan.core.telemetry import get_telemetry
 from openplan.core.telemetry import ensure_schema as _ensure_telemetry_schema
 from openplan.core.telemetry import import_global_calibration as _import_calibration
+from openplan.core.telemetry import sync_to_endpoint as _sync_telemetry
 from openplan.db.connection import get_connection
 from openplan.db.schema import init_db
 from openplan.handler_utils import (
@@ -55,6 +56,12 @@ def _shutdown() -> None:
     _maintenance_stop.set()
     _telemetry.flush_to_events()
     if _CONN is not None:
+        endpoint = get_config().get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
+        if endpoint:
+            try:
+                _sync_telemetry(_CONN, endpoint)
+            except Exception:
+                pass
         _CONN.close()
 
 
@@ -247,6 +254,9 @@ def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue
             continue
         try:
             _propagate(conn, config)
+            endpoint = config.get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
+            if endpoint:
+                _sync_telemetry(conn, endpoint)
         finally:
             write_lock.release()
         with queue_lock:
