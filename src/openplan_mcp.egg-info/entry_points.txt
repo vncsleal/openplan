@@ -1,3 +1,0 @@
-[console_scripts]
-openplan = openplan.__main__:main
-openplan-mcp = openplan.server:main

@@ -1,50 +1,41 @@
-# OpenPlan v0.8.1 — Agent Instructions
+# OpenPlan v0.1.0 — Agent Instructions
 
 ## Identity
 
-OpenPlan is an MCP server for AI-native state space planning. Lives at `/Users/vncsleal/Code/openplan`. Python package `openplan`, version `0.8.1`.
+OpenPlan is an MCP server for AI-native project planning and cost tracking. Lives at `/Users/vncsleal/Code/openplan`. npm package `@openplan/mcp`, version `0.1.0`.
 
 ## MCP Primitives
 
-- **4 tools**: init, act, recommend, export
-- **Resources**: `openplan://projects`, `openplan://analytics`, `openplan://tuning`, `{p}/graph`, `{p}/edges`, `{p}/health`
-- **Prompts**: `agent_loop`, `feature-plan`, `debug-blocked`, `review-progress`
-- **Notifications**: `notifications/resources/updated` on graph mutations
+- **3 tools**: plan, checkpoint, review
+- **Resources**: `openplan://profiles`, `openplan://sync-status`
 
 ## Commands
 
-- `.venv/bin/python -m pytest tests/ -v` — run 165 tests
-- `.venv/bin/python -m openplan.server` — start MCP server (stdio)
-- `.venv/bin/pip install -e ".[dev]"` — install dev dependencies
+- `npm test` — run 15+ tests with vitest
+- `npm run build` — compile TypeScript
+- `npx @openplan/mcp` — start MCP server (stdio)
+- `npx fastmcp dev src/server.ts` — dev mode with hot reload
 
 ## Architecture
 
-| Module | Responsibility |
-|--------|---------------|
-| `server.py` | MCP dispatch, RW lock, cursor, resources, prompts |
-| `core/state.py` | init, act, branch, savepoints, auto-calibrate, prune |
-| `core/graph.py` | search, diagnostics, scoring, graph health |
-| `core/recommend.py` | recommend + cross-project + adaptive weights |
-| `core/activation.py` | activation heuristic (in-degree, frontier, recency, boost, visit) |
-| `core/planner.py` | A* pathfinding with bimodal heuristic + visible effective costs |
-| `core/maintenance.py` | background daemon (diagnostics, compress, telemetry flush) |
-| `core/analytics.py` | cross-project anomaly detection + health trends |
-| `core/export.py` | export (JSON/GraphML/matrix) + prune + compress |
-| `core/learnings.py` | cross-project learning patterns with variability analysis |
-| `core/estimator.py` | project cost estimation from historical baselines |
-| `core/retro.py` | planned vs actual cost comparison |
-| `core/embedding.py` | fastembed provider + NumPy cache + ANN |
-| `core/telemetry.py` | usage tracking, suggestion conversion |
-| `db/schema.py` | SQLite schema + FTS5 + triggers + migrations |
+| Layer | Responsibility |
+|-------|---------------|
+| `server.ts` | FastMCP setup, tool/resource registration, lifespan |
+| `core/planner.ts` | Goal decomposition, route generation |
+| `core/tracker.ts` | Phase completion, deviation, hazard detection |
+| `core/reviewer.ts` | Retrospective, learnings, self-diagnostics |
+| `core/costs.ts` | Defaults, calibration, personal bias, tokenization |
+| `core/ports.ts` | Interfaces: MeshPort, CostProbe |
+| `handlers/` | MCP handler layer — validates args, calls core |
+| `adapters/mesh.ts` | fetch-based Mesh sync, degraded mode |
+| `adapters/cost-probe.ts` | Shell command cost probe (start/stop/delta) |
+| `db/` | SQLite via better-sqlite3 with raw SQL schema |
+| `config.ts` | smol-toml loader + env fallback |
 
 ## Key Rules
 
-1. Shell imports core. Core never imports shell.
-2. Savepoints for atomicity on all write tools.
-3. Cursor persists via sessions table + UUID meta key.
-4. Background daemon runs every 5 minutes (diagnostics, compress, propagate).
-5. Adaptive weights adjust scoring based on suggestion conversion rate.
-6. MCP Resources for zero-token graph access.
-7. Options auto-sequence by default; use `parallel=true` for flat siblings.
-8. Goal markers tick via `satisfies_goal` on verify or automatic label substring matching.
-9. Evidence files are stat'd on verify; missing files get `status: unverified` with error metadata.
+1. Core never imports shell. Shell imports core.
+2. 3 tools, one job each. No modes, no sub-actions.
+3. `.openplan` anchor file at project root for multi-session resumption.
+4. First `plan()` call works immediately with bundled defaults.
+5. Server auto-creates config on first run — no setup needed.
