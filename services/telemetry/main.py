@@ -329,7 +329,9 @@ async def create_checkout(request: Request) -> dict[str, str]:
         success_url=os.environ.get(
             "CHECKOUT_SUCCESS_URL", "https://openplan.cc/success"
         ),
-        cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "https://openplan.cc/pricing"),
+        cancel_url=os.environ.get(
+            "CHECKOUT_CANCEL_URL", "https://openplan.cc/#pricing"
+        ),
     )
 
     # Map the ref_id back to the API key for webhook resolution
