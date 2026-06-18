@@ -106,32 +106,137 @@ program
     console.error(pc.green("\nOpenPlan is ready. Restart your MCP client to start using it."));
   });
 
+function meshUrl(): string {
+  return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
+}
+
 program
   .command("auth")
   .description("Authenticate with OpenPlan Mesh (GitHub OAuth)")
   .action(async () => {
-    console.error(pc.yellow("Authentication is not yet available in v0.1.0."));
-    console.error("Set OPENPLAN_API_KEY environment variable or add api_key to config.");
+    const base = meshUrl();
+    try {
+      const deviceResp = await fetch(`${base}/v1/auth/device`, { method: "POST" });
+      if (!deviceResp.ok) throw new Error(`Device auth failed (${deviceResp.status})`);
+      const device = (await deviceResp.json()) as Record<string, unknown>;
+
+      const userCode = device.user_code as string;
+      const verificationUri = (device.verification_uri as string) ?? "https://github.com/login/device";
+      const interval = (device.interval as number) ?? 5;
+      const deviceCode = device.device_code as string;
+
+      console.error(pc.bold("\nOpenPlan Mesh Authentication\n"));
+      console.error(`1. Go to ${pc.cyan(verificationUri)}`);
+      console.error(`2. Enter code: ${pc.bold(pc.green(userCode))}`);
+      console.error("\nWaiting for you to complete GitHub authentication...");
+
+      // Poll for completion
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, interval * 1000));
+        const pollResp = await fetch(`${base}/v1/auth/device/poll`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_code: deviceCode }),
+        });
+        if (!pollResp.ok) continue;
+        const poll = (await pollResp.json()) as Record<string, unknown>;
+
+        if (poll.access_token) {
+          // Exchange access token for an API key
+          const keyResp = await fetch(`${base}/v1/api/keys`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${poll.access_token}`,
+            },
+            body: JSON.stringify({ tier: "free" }),
+          });
+          if (!keyResp.ok) throw new Error("Failed to create API key");
+          const keyData = (await keyResp.json()) as Record<string, unknown>;
+          const apiKey = keyData.api_key as string;
+
+          saveConfig({ apiKey, meshUrl: base });
+          console.error(pc.green("\n✓ Authenticated! API key saved to config."));
+          return;
+        }
+
+        if (poll.error === "authorization_pending") continue;
+        if (poll.error === "slow_down") continue;
+        if (poll.error === "expired_token") {
+          console.error(pc.red("\nAuthentication session expired. Run `openplan auth` again."));
+          return;
+        }
+      }
+
+      console.error(pc.red("\nAuthentication timed out. Run `openplan auth` again."));
+    } catch (e) {
+      console.error(pc.red(`\nAuth failed: ${e instanceof Error ? e.message : "unknown error"}`));
+    }
   });
 
 program
   .command("subscribe")
   .description("Manage subscription (Stripe Checkout)")
-  .action(() => {
-    console.error(pc.yellow("Subscriptions are not yet available in v0.1.0."));
-    console.error("Visit https://openplan.cc to learn more.");
+  .argument("[plan]", "Plan: pro (default) or enterprise", "pro")
+  .action(async (plan: string) => {
+    const config = loadConfig();
+    if (!config.apiKey) {
+      console.error(pc.yellow("Not authenticated. Run `openplan auth` first."));
+      process.exit(1);
+    }
+
+    const base = meshUrl();
+    try {
+      const resp = await fetch(`${base}/v1/subscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, api_key: config.apiKey }),
+      });
+      if (!resp.ok) {
+        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+        console.error(pc.red(err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`));
+        return;
+      }
+      const data = (await resp.json()) as Record<string, unknown>;
+      const url = data.checkout_url as string;
+      console.error(pc.bold("\nOpenPlan Pro Subscription\n"));
+      console.error(`Complete checkout at: ${pc.cyan(url)}`);
+      console.error("Your subscription activates automatically after payment.\n");
+    } catch (e) {
+      console.error(pc.red(`Subscribe failed: ${e instanceof Error ? e.message : "unknown error"}`));
+    }
   });
 
 program
   .command("account")
   .description("Account info, export/delete data")
-  .action(() => {
+  .action(async () => {
     const config = loadConfig();
+    const base = meshUrl();
+
+    let subStatus: Record<string, unknown> | null = null;
+    if (config.apiKey) {
+      try {
+        const resp = await fetch(`${base}/v1/account`, {
+          headers: { Authorization: `Bearer ${config.apiKey}` },
+        });
+        if (resp.ok) subStatus = (await resp.json()) as Record<string, unknown>;
+      } catch {
+        // Mesh unreachable — show local-only info
+      }
+    }
+
     if (program.opts().json) {
-      console.log(JSON.stringify({ identityId: config.identityId, dataDir: config.dataDir }, null, 2));
+      console.log(JSON.stringify({ identityId: config.identityId, dataDir: config.dataDir, apiKey: config.apiKey ? "configured" : null, subscription: subStatus }, null, 2));
     } else {
       console.error(pc.cyan(`Identity: ${config.identityId}`));
       console.error(pc.cyan(`Data: ${config.dataDir}`));
+      console.error(`API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
+      if (subStatus) {
+        console.error(`Subscription: ${pc.green((subStatus.tier as string) ?? "free")} — ${subStatus.status as string}`);
+      } else {
+        console.error(`Subscription: ${pc.dim("free (unauthenticated)")}`);
+      }
     }
   });
 
