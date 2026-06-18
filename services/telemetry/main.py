@@ -14,14 +14,31 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 v1 = APIRouter(prefix="/v1")
 
 from .auth import (
-    get_tier_from_api_key, get_rate_limit_for_tier, generate_api_key,
-    revoke_api_key, get_user_by_github_id, create_user,
-    create_oauth_session, poll_oauth_session, complete_oauth_session,
-    start_github_device_flow, poll_github_token, get_github_user,
-    get_subscription, create_subscription, cancel_subscription,
+    get_tier_from_api_key,
+    get_rate_limit_for_tier,
+    generate_api_key,
+    revoke_api_key,
+    get_user_by_github_id,
+    create_user,
+    create_oauth_session,
+    poll_oauth_session,
+    complete_oauth_session,
+    start_github_device_flow,
+    poll_github_token,
+    get_github_user,
+    get_subscription,
+    create_subscription,
+    cancel_subscription,
     get_key_usage,
 )
-from .db import get_conn, init_db, insert_event, get_calibration, get_rate_limit, increment_rate_limit
+from .db import (
+    get_conn,
+    init_db,
+    insert_event,
+    get_calibration,
+    get_rate_limit,
+    increment_rate_limit,
+)
 from .models import TelemetryBatch, CalibrationResponse, Baseline, HealthResponse
 
 _log = logging.getLogger("openplan.api")
@@ -60,6 +77,7 @@ def _get_tier(request: Request) -> str:
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
+
 @v1.get("/health")
 async def health() -> HealthResponse:
     count = conn.execute("SELECT COUNT(*) AS cnt FROM calibration_events").fetchone()
@@ -71,6 +89,7 @@ async def health() -> HealthResponse:
 
 
 # ─── Telemetry ───────────────────────────────────────────────────────────────
+
 
 @v1.post("/checkpoints")
 async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, Any]:
@@ -93,10 +112,17 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
         ac = ev.actual_cost
         ec = ev.expected_cost
         if ac <= 0:
-            rejected.append({"reason": "actual_cost must be > 0", "event": ev.model_dump()})
+            rejected.append(
+                {"reason": "actual_cost must be > 0", "event": ev.model_dump()}
+            )
             continue
         if ec and (ac > ec * 10 or ac < ec * 0.01):
-            rejected.append({"reason": "actual_cost out of expected range (0.01x-10x)", "event": ev.model_dump()})
+            rejected.append(
+                {
+                    "reason": "actual_cost out of expected range (0.01x-10x)",
+                    "event": ev.model_dump(),
+                }
+            )
             continue
         insert_event(conn, api_key, ev.model_dump())
         increment_rate_limit(conn, api_key or "anonymous")
@@ -117,6 +143,7 @@ async def calibration() -> CalibrationResponse:
 
 # ─── GitHub OAuth Device Code Flow ───────────────────────────────────────────
 
+
 @v1.post("/auth/device")
 async def oauth_authorize() -> dict[str, Any]:
     try:
@@ -124,12 +151,19 @@ async def oauth_authorize() -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GitHub API error: {e}")
 
-    create_oauth_session(conn, gh_resp["device_code"], gh_resp["user_code"], gh_resp.get("expires_in", 600))
+    create_oauth_session(
+        conn,
+        gh_resp["device_code"],
+        gh_resp["user_code"],
+        gh_resp.get("expires_in", 600),
+    )
 
     return {
         "device_code": gh_resp["device_code"],
         "user_code": gh_resp["user_code"],
-        "verification_uri": gh_resp.get("verification_uri", "https://github.com/login/device"),
+        "verification_uri": gh_resp.get(
+            "verification_uri", "https://github.com/login/device"
+        ),
         "interval": gh_resp.get("interval", 5),
     }
 
@@ -170,15 +204,27 @@ async def oauth_token(request: Request) -> dict[str, Any]:
         if existing:
             user_id = existing["id"]
         else:
-            user_id = create_user(conn, gh_user["id"], gh_user.get("login", ""), gh_user.get("email", ""), gh_user.get("avatar_url", ""))
+            user_id = create_user(
+                conn,
+                gh_user["id"],
+                gh_user.get("login", ""),
+                gh_user.get("email", ""),
+                gh_user.get("avatar_url", ""),
+            )
 
         from datetime import datetime, timezone
+
         access_token = secrets.token_urlsafe(32)
         refresh_token = secrets.token_urlsafe(32)
 
-        complete_oauth_session(conn, device_code, github_token, access_token, refresh_token)
+        complete_oauth_session(
+            conn, device_code, github_token, access_token, refresh_token
+        )
         # Clear GitHub token from DB after use — no longer needed
-        conn.execute("UPDATE oauth_sessions SET github_token = '' WHERE device_code = ?", (device_code,))
+        conn.execute(
+            "UPDATE oauth_sessions SET github_token = '' WHERE device_code = ?",
+            (device_code,),
+        )
         conn.commit()
 
         return {
@@ -196,6 +242,7 @@ async def oauth_token(request: Request) -> dict[str, Any]:
 
 
 # ─── API Key Management ──────────────────────────────────────────────────────
+
 
 @v1.post("/api/keys")
 async def create_api_key(request: Request) -> dict[str, str]:
@@ -256,6 +303,7 @@ async def create_checkout(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=501, detail="Billing not configured")
 
     import stripe as stripe_sdk
+
     stripe_sdk.api_key = STRIPE_SECRET_KEY
 
     body = await request.json()
@@ -265,7 +313,10 @@ async def create_checkout(request: Request) -> dict[str, str]:
     if not api_key:
         raise HTTPException(status_code=400, detail="Missing api_key")
 
-    price_ids = {"pro": os.environ.get("STRIPE_PRO_PRICE_ID", ""), "enterprise": os.environ.get("STRIPE_ENTERPRISE_PRICE_ID", "")}
+    price_ids = {
+        "pro": os.environ.get("STRIPE_PRO_PRICE_ID", ""),
+        "enterprise": os.environ.get("STRIPE_ENTERPRISE_PRICE_ID", ""),
+    }
     price_id = price_ids.get(plan)
     if not price_id:
         raise HTTPException(status_code=400, detail=f"Unknown plan: {plan}")
@@ -275,7 +326,9 @@ async def create_checkout(request: Request) -> dict[str, str]:
         mode="subscription",
         line_items=[{"price": price_id, "quantity": 1}],
         client_reference_id=ref_id,
-        success_url=os.environ.get("CHECKOUT_SUCCESS_URL", "https://openplan.cc/success"),
+        success_url=os.environ.get(
+            "CHECKOUT_SUCCESS_URL", "https://openplan.cc/success"
+        ),
         cancel_url=os.environ.get("CHECKOUT_CANCEL_URL", "https://openplan.cc/pricing"),
     )
 
@@ -295,6 +348,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
         raise HTTPException(status_code=501, detail="Billing not configured")
 
     import stripe as stripe_sdk
+
     stripe_sdk.api_key = STRIPE_SECRET_KEY
 
     payload = await request.body()
@@ -308,25 +362,31 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        ref_id = session.get("client_reference_id", "")
-        stripe_customer_id = session.get("customer", "")
-        stripe_sub_id = session.get("subscription", "")
+        ref_id = session.client_reference_id or ""
+        stripe_customer_id = session.customer or ""
+        stripe_sub_id = session.subscription or ""
         tier = "pro"
 
         # Look up API key from reference hash
-        ref_row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"stripe_ref:{ref_id}",)).fetchone()
+        ref_row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (f"stripe_ref:{ref_id}",)
+        ).fetchone()
         api_key = ref_row["value"] if ref_row else ""
 
-        key_row = conn.execute("SELECT user_id FROM api_keys WHERE key = ?", (api_key,)).fetchone()
+        key_row = conn.execute(
+            "SELECT user_id FROM api_keys WHERE key = ?", (api_key,)
+        ).fetchone()
         if key_row and stripe_sub_id:
-            create_subscription(conn, stripe_sub_id, key_row["user_id"], stripe_customer_id, tier)
+            create_subscription(
+                conn, stripe_sub_id, key_row["user_id"], stripe_customer_id, tier
+            )
             conn.execute("UPDATE api_keys SET tier = ? WHERE key = ?", (tier, api_key))
             conn.commit()
             _log.info("Subscription activated for key %s", api_key[:8])
 
     elif event["type"] == "customer.subscription.deleted":
         sub = event["data"]["object"]
-        cancel_subscription(conn, sub["id"])
+        cancel_subscription(conn, sub.id or "")
         _log.info("Subscription canceled: %s", sub["id"])
 
     return {"ok": True}
@@ -338,20 +398,29 @@ async def subscription_status(request: Request) -> dict[str, Any]:
     if not auth:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    key_row = conn.execute("SELECT user_id FROM api_keys WHERE key = ?", (auth,)).fetchone()
+    key_row = conn.execute(
+        "SELECT user_id FROM api_keys WHERE key = ?", (auth,)
+    ).fetchone()
     if not key_row:
         raise HTTPException(status_code=404, detail="API key not found")
 
     sub = get_subscription(conn, key_row["user_id"])
     if sub:
-        return {"status": sub["status"], "tier": sub["tier"], "current_period_end": sub["current_period_end"]}
+        return {
+            "status": sub["status"],
+            "tier": sub["tier"],
+            "current_period_end": sub["current_period_end"],
+        }
     return {"status": "none", "tier": "free"}
 
 
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
+
 @v1.post("/admin/keys")
-async def admin_create_key(request: Request, tier: str = "free", label: str = "") -> dict[str, str]:
+async def admin_create_key(
+    request: Request, tier: str = "free", label: str = ""
+) -> dict[str, str]:
     admin_key = os.environ.get("OPENPLAN_ADMIN_KEY", "")
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not admin_key or auth != admin_key:
@@ -362,5 +431,6 @@ async def admin_create_key(request: Request, tier: str = "free", label: str = ""
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
