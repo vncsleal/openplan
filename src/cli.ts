@@ -5,16 +5,20 @@ import { loadConfig, saveConfig, getConfigPath, getDataDir, ensureDirectories } 
 import { startServer } from "./server.js";
 import { openDatabase } from "./db/connection.js";
 import { createStore } from "./db/store.js";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import pc from "picocolors";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
 
 const program = new Command();
 
 program
   .name("openplan")
   .description("Waze for AI agents -- plan, track, and learn from software projects")
-  .version("0.1.0")
+  .version(pkg.version)
   .option("--json", "Output in JSON format")
   .option("--no-color", "Disable color output");
 
@@ -325,8 +329,22 @@ const knownCommands = program.commands.map((c) => c.name());
 const userArgs = process.argv.slice(2);
 const firstNonFlag = userArgs.find((a) => !a.startsWith("-"));
 const isKnownCommand = firstNonFlag !== undefined && knownCommands.includes(firstNonFlag);
+const isHelp = userArgs.length === 1 && (userArgs[0] === "--help" || userArgs[0] === "-h");
+const isVersion = userArgs.length === 1 && (userArgs[0] === "--version" || userArgs[0] === "-V");
 
-if (isKnownCommand) {
+if (isHelp) {
+  program.outputHelp();
+  process.exit(0);
+} else if (isVersion) {
+  console.log(pkg.version);
+  process.exit(0);
+} else if (firstNonFlag === "help") {
+  // Handle `help [command]` ourselves — Commander's handler doesn't
+  // flush stdout before process.exit in piped environments
+  const helpCmd = userArgs[1] ? program.commands.find((c) => c.name() === userArgs[1]) : null;
+  console.log(helpCmd ? helpCmd.helpInformation() : program.helpInformation());
+  process.exit(0);
+} else if (isKnownCommand) {
   program.parse(process.argv);
 } else {
   startServer().catch((e) => {
