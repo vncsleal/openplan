@@ -221,7 +221,8 @@ program
         if (options.debug) console.error(pc.dim(`\n  [debug] poll response: ${JSON.stringify(poll)}`));
 
         if (poll.access_token) {
-          process.stderr.write(`\r  ${pc.green("✓")} GitHub authentication complete!                     \n`);
+          process.stderr.write("\r                                                     \r");
+          process.stderr.write(`  ${pc.green("✓")} GitHub authentication complete!\n`);
 
           const keyResp = await fetch(`${base}/v1/api/keys`, {
             method: "POST",
@@ -248,23 +249,27 @@ program
           continue;
         }
         if (poll.error === "expired_token") {
-          process.stderr.write(`\r  ${pc.red("✗")} Session expired.                               \n`);
+          process.stderr.write("\r                                                     \r");
+          process.stderr.write(`  ${pc.red("✗")} Session expired.\n`);
           console.error(`  ${pc.red("✗")} Session expired. Run \`openplan auth\` again.\n`);
           return;
         }
         if (poll.error === "access_denied") {
-          process.stderr.write(`\r  ${pc.red("✗")} Authorization denied.                           \n`);
+          process.stderr.write("\r                                                     \r");
+          process.stderr.write(`  ${pc.red("✗")} Authorization denied.\n`);
           console.error(`  ${pc.red("✗")} Authorization was denied.\n`);
           return;
         }
 
         // Unknown error from API
-        process.stderr.write(`\r  ${pc.red("✗")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}  \n`);
+        process.stderr.write("\r                                                     \r");
+        process.stderr.write(`  ${pc.red("✗")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}\n`);
         console.error(`  ${pc.yellow("!")} Unexpected error from server: ${JSON.stringify(poll)}\n`);
         return;
       }
 
-      process.stderr.write(`\r  ${pc.red("✗")} Timed out.                                       \n`);
+      process.stderr.write("\r                                                     \r");
+      process.stderr.write(`  ${pc.red("✗")} Timed out.\n`);
       console.error(`  ${pc.red("✗")} Timed out after ${expiryMinutes} minutes. Run \`openplan auth\` again.\n`);
     } catch (e) {
       console.error(`  ${pc.red("✗")} ${e instanceof Error ? e.message : "unknown error"}\n`);
