@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 v1 = APIRouter(prefix="/v1")
 
@@ -61,6 +62,12 @@ app = FastAPI(
     title="OpenPlan Telemetry API",
     version=VERSION,
     lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://openplan.cc"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 app.include_router(v1)
 
