@@ -1,35 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-.eggs/
-
-# Virtual environment
-.venv/
-venv/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-
-# Database
-*.db
-*.db-wal
-*.db-shm
-openplan.db
-backups/
-
-# Pytest
-.pytest_cache/
-
-# Environment
+config.json
 .env
-.env.local
-
-# OpenCode
-.opencode/
+*.db
+__pycache__/
+*.pyc
+.DS_Store

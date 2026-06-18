@@ -4,14 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openplan-mcp"
-version = "0.8.3"
-description = "Waze for AI agents planning — MCP server that improves cost estimates by learning from every project"
+version = "0.9.5"
+description = "Waze for AI agents — plan, track, and learn from software projects. 3 tools, one job each."
 readme = "README.md"
 license = {text = "MIT"}
-authors = [
-    {name = "OpenPlan Contributors"},
-]
-keywords = ["mcp", "planning", "ai-agent", "state-space", "project-management", "model-context-protocol"]
+keywords = ["mcp", "planning", "ai-agent", "model-context-protocol"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,29 +16,24 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
-    "numpy>=1.24.0",
     "httpx>=0.28.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "ruff>=0.5.0"]
-embed = ["fastembed>=0.5.0"]
-ann = ["sqlite-vec>=0.1.9"]
-all = ["openplan[embed,ann,dev]"]
 
 [project.urls]
-Homepage = "https://github.com/anomalyco/opencode"
+Homepage = "https://opencode.ai/docs/openplan"
 Documentation = "https://opencode.ai/docs/openplan"
-Source = "https://github.com/anomalyco/opencode/tree/main/docs/workflow/openplan"
-Changelog = "https://github.com/anomalyco/opencode/blob/main/docs/workflow/openplan/CHANGELOG.md"
+Source = "https://github.com/anomalyco/opencode"
 
 [project.scripts]
 openplan = "openplan.__main__:main"
+openplan-mcp = "openplan.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -52,7 +44,4 @@ target-version = "py312"
 line-length = 110
 
 [tool.pytest.ini_options]
-markers = [
-    "slow: performance benchmarks that create 5k+ nodes",
-]
 testpaths = ["tests"]

@@ -9,7 +9,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+
+v1 = APIRouter(prefix="/v1")
 
 from .auth import (
     get_tier_from_api_key, get_rate_limit_for_tier, generate_api_key,
@@ -43,6 +45,7 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
+app.include_router(v1)
 
 
 def _get_tier(request: Request) -> str:
@@ -57,7 +60,7 @@ def _get_tier(request: Request) -> str:
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
-@app.get("/health")
+@v1.get("/health")
 async def health() -> HealthResponse:
     count = conn.execute("SELECT COUNT(*) AS cnt FROM calibration_events").fetchone()
     return HealthResponse(
@@ -69,7 +72,7 @@ async def health() -> HealthResponse:
 
 # ─── Telemetry ───────────────────────────────────────────────────────────────
 
-@app.post("/telemetry")
+@v1.post("/checkpoints")
 async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, Any]:
     tier = _get_tier(request)
     api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -106,7 +109,7 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
     return result
 
 
-@app.get("/calibration", response_model=CalibrationResponse)
+@v1.get("/baselines", response_model=CalibrationResponse)
 async def calibration() -> CalibrationResponse:
     baselines = get_calibration(conn)
     return CalibrationResponse(baselines=[Baseline(**b) for b in baselines])
@@ -114,7 +117,7 @@ async def calibration() -> CalibrationResponse:
 
 # ─── GitHub OAuth Device Code Flow ───────────────────────────────────────────
 
-@app.post("/oauth/authorize")
+@v1.post("/auth/device")
 async def oauth_authorize() -> dict[str, Any]:
     try:
         gh_resp = await start_github_device_flow()
@@ -131,7 +134,7 @@ async def oauth_authorize() -> dict[str, Any]:
     }
 
 
-@app.post("/oauth/token")
+@v1.post("/auth/device/poll")
 async def oauth_token(request: Request) -> dict[str, Any]:
     body = await request.json()
     device_code = body.get("device_code")
@@ -194,7 +197,7 @@ async def oauth_token(request: Request) -> dict[str, Any]:
 
 # ─── API Key Management ──────────────────────────────────────────────────────
 
-@app.post("/api/keys")
+@v1.post("/api/keys")
 async def create_api_key(request: Request) -> dict[str, str]:
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not auth:
@@ -220,7 +223,7 @@ async def create_api_key(request: Request) -> dict[str, str]:
     return {"api_key": api_key, "tier": tier}
 
 
-@app.post("/api/keys/revoke")
+@v1.post("/api/keys/revoke")
 async def revoke_key(request: Request) -> dict[str, bool]:
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     body = await request.json()
@@ -234,7 +237,7 @@ async def revoke_key(request: Request) -> dict[str, bool]:
     return {"ok": ok}
 
 
-@app.get("/api/keys/usage")
+@v1.get("/api/keys/usage")
 async def key_usage(request: Request) -> dict[str, Any]:
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not auth:
@@ -247,7 +250,7 @@ async def key_usage(request: Request) -> dict[str, Any]:
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 
 
-@app.post("/checkout")
+@v1.post("/subscribe")
 async def create_checkout(request: Request) -> dict[str, str]:
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=501, detail="Billing not configured")
@@ -286,7 +289,7 @@ async def create_checkout(request: Request) -> dict[str, str]:
     return {"checkout_url": session.url, "session_id": session.id}
 
 
-@app.post("/webhooks/stripe")
+@v1.post("/webhooks/stripe")
 async def stripe_webhook(request: Request) -> dict[str, bool]:
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=501, detail="Billing not configured")
@@ -329,7 +332,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.get("/api/subscription/status")
+@v1.get("/account")
 async def subscription_status(request: Request) -> dict[str, Any]:
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not auth:
@@ -347,7 +350,7 @@ async def subscription_status(request: Request) -> dict[str, Any]:
 
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
-@app.post("/admin/keys")
+@v1.post("/admin/keys")
 async def admin_create_key(request: Request, tier: str = "free", label: str = "") -> dict[str, str]:
     admin_key = os.environ.get("OPENPLAN_ADMIN_KEY", "")
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")

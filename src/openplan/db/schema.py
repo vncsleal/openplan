@@ -1,192 +1,117 @@
-from __future__ import annotations
-
 import sqlite3
+import json
+import os
 
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS nodes (
-    id         TEXT PRIMARY KEY,
-    label      TEXT NOT NULL DEFAULT '',
-    activation REAL NOT NULL DEFAULT 0.0,
-    frontier   INTEGER NOT NULL DEFAULT 0,
-    project    TEXT NOT NULL,
-    props      TEXT NOT NULL DEFAULT '{}',
-    parent_id  TEXT REFERENCES nodes(id),
-    status     TEXT NOT NULL DEFAULT 'pending',
-    project_type TEXT NOT NULL DEFAULT '',
-    terminal   INTEGER NOT NULL DEFAULT 0,
-    actual_tokens REAL NOT NULL DEFAULT 0.0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+CREATE TABLE IF NOT EXISTS routes (
+    id            TEXT PRIMARY KEY,
+    project       TEXT NOT NULL,
+    goal          TEXT NOT NULL DEFAULT '',
+    context       TEXT NOT NULL DEFAULT '',
+    total_expected REAL NOT NULL DEFAULT 0.0,
+    total_actual  REAL,
+    status        TEXT NOT NULL DEFAULT 'active',
+    archived      INTEGER NOT NULL DEFAULT 0,
+    abandon_reason TEXT NOT NULL DEFAULT '',
+    goal_tokens   TEXT NOT NULL DEFAULT '',
+    context_tokens TEXT NOT NULL DEFAULT '',
+    completed_at  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE TABLE IF NOT EXISTS edges (
-    source_id    TEXT NOT NULL REFERENCES nodes(id),
-    target_id    TEXT NOT NULL REFERENCES nodes(id),
-    action       TEXT NOT NULL,
-    cost_tokens  REAL NOT NULL DEFAULT 10000.0,
-    cost_risk    REAL NOT NULL DEFAULT 0.1,
-    prob         REAL NOT NULL DEFAULT 0.8,
-    weight_history TEXT NOT NULL DEFAULT '[]',
-    conditions    TEXT NOT NULL DEFAULT '',
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (source_id, target_id, action)
-) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS route_phases (
+    id            TEXT PRIMARY KEY,
+    route_id      TEXT NOT NULL REFERENCES routes(id),
+    label         TEXT NOT NULL,
+    action        TEXT NOT NULL DEFAULT 'implement',
+    expected_cost REAL NOT NULL DEFAULT 0.0,
+    actual_cost   REAL,
+    outcome       TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    sequence      INTEGER NOT NULL,
+    label_tokens  TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 
-CREATE TABLE IF NOT EXISTS events (
+CREATE TABLE IF NOT EXISTS calibration_events (
     id              TEXT PRIMARY KEY,
-    project         TEXT NOT NULL,
-    node_id         TEXT NOT NULL REFERENCES nodes(id),
-    event_type      TEXT NOT NULL,
-    payload         TEXT NOT NULL DEFAULT '{}',
-    version         INTEGER NOT NULL DEFAULT 1,
-    idempotency_key TEXT,
+    action          TEXT NOT NULL,
+    phase_label_tokens TEXT NOT NULL DEFAULT '',
+    expected_cost   REAL NOT NULL DEFAULT 0.0,
+    actual_cost     REAL NOT NULL DEFAULT 0.0,
+    outcome         TEXT NOT NULL DEFAULT 'success',
+    project         TEXT NOT NULL DEFAULT '',
+    session_id      TEXT NOT NULL DEFAULT '',
+    api_key         TEXT NOT NULL DEFAULT '',
+    synced          INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cost_baselines (
+    match_level       TEXT NOT NULL DEFAULT 'action',
+    action            TEXT NOT NULL DEFAULT '',
+    phase_label_tokens TEXT NOT NULL DEFAULT '',
+    avg_cost          REAL NOT NULL DEFAULT 0.0,
+    ci_lo             REAL NOT NULL DEFAULT 0.0,
+    ci_hi             REAL NOT NULL DEFAULT 0.0,
+    sample_count      INTEGER NOT NULL DEFAULT 0,
+    success_rate      REAL NOT NULL DEFAULT 0.0,
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (match_level, action, phase_label_tokens)
+);
+
+CREATE TABLE IF NOT EXISTS completed_sequences (
+    id              TEXT PRIMARY KEY,
+    goal_tokens     TEXT NOT NULL DEFAULT '',
+    context_tokens  TEXT NOT NULL DEFAULT '',
+    action_sequence TEXT NOT NULL DEFAULT '',
+    total_expected  REAL NOT NULL DEFAULT 0.0,
+    total_actual    REAL NOT NULL DEFAULT 0.0,
+    efficiency      REAL NOT NULL DEFAULT 0.0,
+    outcome         TEXT NOT NULL DEFAULT 'success',
     session_id      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_idempotency ON events(idempotency_key);
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project);
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, action);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
-CREATE INDEX IF NOT EXISTS idx_events_node ON events(node_id, version);
-CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
-
-CREATE TABLE IF NOT EXISTS events_archive (
-    id              TEXT PRIMARY KEY,
-    project         TEXT NOT NULL,
-    node_id         TEXT NOT NULL,
-    event_type      TEXT NOT NULL,
-    payload         TEXT NOT NULL DEFAULT '{}',
-    version         INTEGER NOT NULL DEFAULT 1,
-    idempotency_key TEXT,
-    session_id      TEXT NOT NULL DEFAULT '',
-    created_at      TEXT NOT NULL
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(label, project);
-
-CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT OR REPLACE INTO nodes_fts(rowid, label, project) VALUES (new.rowid, new.label, new.project);
-END;
-
-CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE OF label ON nodes BEGIN
-    UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
-END;
-
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id     TEXT NOT NULL DEFAULT '',
-    project        TEXT NOT NULL,
-    cursor_state_id TEXT,
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    PRIMARY KEY (session_id, project)
-);
-
-CREATE TABLE IF NOT EXISTS cross_project_insights (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_project TEXT NOT NULL,
-    source_state   TEXT NOT NULL,
-    target_project TEXT NOT NULL,
-    target_state   TEXT NOT NULL,
-    insight_text   TEXT NOT NULL,
-    similarity     REAL NOT NULL DEFAULT 0.0,
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(source_project, source_state, target_project, target_state, insight_text)
-);
-CREATE INDEX IF NOT EXISTS idx_cpi_target ON cross_project_insights(target_project, target_state);
-
-CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
+CREATE INDEX IF NOT EXISTS idx_routes_project ON routes(project);
+CREATE INDEX IF NOT EXISTS idx_route_phases_route ON route_phases(route_id);
+CREATE INDEX IF NOT EXISTS idx_calibration_synced ON calibration_events(synced);
+CREATE INDEX IF NOT EXISTS idx_calibration_lookup ON calibration_events(action, phase_label_tokens);
+CREATE INDEX IF NOT EXISTS idx_sequences_goals ON completed_sequences(goal_tokens);
 """
+
+BUNDLED_DEFAULTS_SQL = """
+INSERT OR IGNORE INTO cost_baselines (match_level, action, phase_label_tokens, avg_cost, ci_lo, ci_hi, sample_count, success_rate) VALUES
+    ('action', 'implement', '', 2000.0, 500.0, 5000.0, 100, 0.85),
+    ('action', 'design', '', 1500.0, 500.0, 4000.0, 50, 0.80),
+    ('action', 'deploy', '', 600.0, 300.0, 1000.0, 80, 0.90),
+    ('action', 'test', '', 800.0, 400.0, 1500.0, 60, 0.85);
+"""
+
+
+def tokenize(text: str) -> str:
+    tokens = []
+    for word in text.lower().split():
+        clean = "".join(c for c in word if c.isalnum() or c in "-_.")
+        if len(clean) > 2 and clean not in _STOP_WORDS:
+            tokens.append(clean)
+    return " ".join(tokens)
+
+
+_STOP_WORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "using", "build",
+    "implement", "create", "setup", "add", "make", "get", "use", "need",
+    "new", "all", "any", "can", "has", "its", "not", "but", "are", "was",
+}
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
-    try:
-        conn.execute("DROP TRIGGER IF EXISTS nodes_ai")
-        conn.execute("DROP TRIGGER IF EXISTS nodes_au")
-        conn.executescript("""
-            CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
-                INSERT OR REPLACE INTO nodes_fts(rowid, label, project) VALUES (new.rowid, new.label, new.project);
-            END;
-            CREATE TRIGGER nodes_au AFTER UPDATE OF label ON nodes BEGIN
-                UPDATE nodes_fts SET label = new.label WHERE rowid = new.rowid;
-            END;
-        """)
-        conn.execute("DELETE FROM nodes_fts WHERE rowid NOT IN (SELECT rowid FROM nodes)")
-    except Exception:
-        pass
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cost_baselines (
-            project_type TEXT NOT NULL DEFAULT '',
-            project      TEXT,
-            action       TEXT NOT NULL,
-            cost_tokens  REAL NOT NULL DEFAULT 10000.0,
-            cost_risk    REAL NOT NULL DEFAULT 0.1,
-            sample_count INTEGER NOT NULL DEFAULT 1,
-            updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            PRIMARY KEY (project_type, action, project)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS self_diagnostics (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            metric      TEXT NOT NULL,
-            value       REAL NOT NULL,
-            threshold   REAL NOT NULL DEFAULT 0.0,
-            severity    TEXT NOT NULL DEFAULT 'info',
-            detail      TEXT NOT NULL DEFAULT '',
-            created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS goal_markers (
-            project       TEXT NOT NULL,
-            criterion     TEXT NOT NULL,
-            achieved      INTEGER NOT NULL DEFAULT 0,
-            achieved_at   TEXT,
-            achieved_by   TEXT,
-            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            PRIMARY KEY (project, criterion)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS evidence (
-            id             TEXT PRIMARY KEY,
-            project        TEXT NOT NULL,
-            state_id       TEXT NOT NULL REFERENCES nodes(id),
-            evidence_type  TEXT NOT NULL,
-            uri            TEXT NOT NULL,
-            description    TEXT NOT NULL DEFAULT '',
-            status         TEXT NOT NULL DEFAULT 'unverified',
-            metadata       TEXT NOT NULL DEFAULT '{}',
-            verified_at    TEXT,
-            created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_state ON evidence(state_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project)")
-    try:
-        conn.execute("ALTER TABLE evidence ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
-    except Exception:
-        pass
-    try_init_vec0(conn)
-
-
-def try_init_vec0(conn: sqlite3.Connection) -> bool:
-    """Try to initialise sqlite-vec ANN index. Idempotent."""
-    try:
-        import sqlite_vec
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings "
-            "USING vec0(embedding float[384] distance_metric=cosine)"
-        )
-        return True
-    except Exception:
-        return False
+    # Check if bundled defaults already seeded
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM cost_baselines"
+    ).fetchone()
+    if row["cnt"] == 0:
+        conn.executescript(BUNDLED_DEFAULTS_SQL)
+        conn.commit()

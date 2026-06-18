@@ -1,3 +1,28 @@
+Metadata-Version: 2.4
+Name: openplan-mcp
+Version: 0.9.5
+Summary: Waze for AI agents — plan, track, and learn from software projects. 3 tools, one job each.
+License: MIT
+Project-URL: Homepage, https://opencode.ai/docs/openplan
+Project-URL: Documentation, https://opencode.ai/docs/openplan
+Project-URL: Source, https://github.com/anomalyco/opencode
+Keywords: mcp,planning,ai-agent,model-context-protocol
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Software Development :: Libraries :: Application Frameworks
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: mcp<2.0.0,>=1.0.0
+Requires-Dist: httpx>=0.28.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Dynamic: license-file
+
 # OpenPlan
 
 **Waze for AI agents planning** — an MCP server that helps AI agents plan software projects efficiently by learning from every agent's cost data.

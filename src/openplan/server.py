@@ -1,325 +1,194 @@
 from __future__ import annotations
 
-import atexit
 import json
 import logging
 import os
-import threading
-import time
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
+
+from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.session import ServerSession
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+
+from openplan import VERSION
+from openplan.db.connection import get_connection, close
+from openplan.db.schema import init_db
+from openplan.handlers import HANDLERS
+from openplan.adapters.mesh import MeshAdapter
 
 _log = logging.getLogger("openplan")
 
-from mcp.server import Server
-from mcp.server.models import InitializationOptions
-from mcp.server.stdio import stdio_server
-from mcp.types import (
-    GetPromptResult, ListResourcesResult, Prompt,
-    PromptMessage, PromptArgument, ReadResourceResult, Resource,
-    ServerCapabilities, ServerNotification, TextContent, TextResourceContents,
-    ToolsCapability, ResourcesCapability,
-)
 
-from openplan import VERSION
-from openplan.config import load_config
-from openplan.core.analytics import compute_analytics
-from openplan.core.errors import OpenPlanError
-from openplan.core.insight_propagation import propagate as _propagate
-from openplan.core.learning import tune as _tune
-from openplan.core.maintenance import _run_cycle as _maintenance_cycle
-from openplan.core.telemetry import get_telemetry
-from openplan.core.telemetry import ensure_schema as _ensure_telemetry_schema
-from openplan.core.telemetry import import_global_calibration as _import_calibration
-from openplan.core.telemetry import sync_to_endpoint as _sync_telemetry
-from openplan.db.connection import get_connection
-from openplan.db.schema import init_db
-from openplan.handler_utils import (
-    _config, _conn, _notification_queue, _notification_lock, _notification_seen,
-    _read_lock_acquire, _read_lock_release, _SESSION_ID,
-    _write_lock, _write_lock_acquire, _write_lock_release,
-    get_conn, get_config, get_session_id, ok, err,
-    set_config, set_conn, set_session_id, _resolve_session_id,
-)
-from openplan.handlers import HANDLERS
-from openplan.tools.definitions import get_tools
-
-from pydantic import AnyUrl
-
-_app = Server("openplan")
-_CONN: Any = None
-_maintenance_stop = threading.Event()
-_telemetry = get_telemetry()
+@dataclass
+class AppContext:
+    conn: Any
+    config: dict
+    mesh: MeshAdapter
 
 
-def _shutdown() -> None:
-    global _CONN, _maintenance_stop
-    _maintenance_stop.set()
-    _telemetry.flush_to_events()
-    if _CONN is not None:
-        endpoint = get_config().get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
-        if endpoint:
-            try:
-                _sync_telemetry(_CONN, endpoint)
-            except Exception:
-                pass
-        _CONN.close()
-
-
-def _resolve_goal(project: str) -> str:
-    conn = get_conn()
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (f"goal:{project}",)).fetchone()
-    if row:
+def _load_config() -> dict:
+    config_path = os.environ.get(
+        "OPENPLAN_CONFIG",
+        os.path.expanduser("~/.config/openplan/config.json"),
+    )
+    defaults = {
+        "db_path": os.path.expanduser("~/.local/share/openplan/data.db"),
+        "api_url": os.environ.get("OPENPLAN_API_URL", "https://api.openplan.cc"),
+        "api_key": os.environ.get("OPENPLAN_API_KEY", ""),
+        "cost_probe": None,
+        "github_client_id": os.environ.get("OPENPLAN_GITHUB_CLIENT_ID", "Ov23lib55xjCggd9BIDy"),
+        "github_client_secret": os.environ.get("OPENPLAN_GITHUB_CLIENT_SECRET", ""),
+        "turso_url": os.environ.get("OPENPLAN_TURSO_URL", ""),
+        "turso_token": os.environ.get("OPENPLAN_TURSO_TOKEN", ""),
+        "stripe_product_id": os.environ.get("STRIPE_PRODUCT_ID", ""),
+        "stripe_price_id": os.environ.get("STRIPE_PRICE_ID", ""),
+        "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
+    }
+    if os.path.exists(config_path):
         try:
-            gv = json.loads(row["value"])
-            return gv.get("text", "") if isinstance(gv, dict) else ""
-        except (json.JSONDecodeError, TypeError):
+            with open(config_path) as f:
+                user_config = json.load(f)
+                defaults.update(user_config)
+        except (json.JSONDecodeError, OSError):
             pass
-    return ""
+    return defaults
 
 
-def _resolve_project_type(project: str) -> str:
-    conn = get_conn()
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    config = _load_config()
+    conn = get_connection(config["db_path"])
+    init_db(conn)
+    mesh = MeshAdapter(api_url=config.get("api_url", ""), api_key=config.get("api_key", ""))
+
+    # Start background sync thread
+    stop_event = asyncio.Event()
+    sync_task = asyncio.create_task(_sync_loop(conn, mesh, stop_event))
+
+    try:
+        yield AppContext(conn=conn, config=config, mesh=mesh)
+    finally:
+        stop_event.set()
+        sync_task.cancel()
+        conn.commit()
+        close()
+
+
+async def _sync_loop(conn, mesh: MeshAdapter, stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        try:
+            mesh.sync_pending(conn)
+            await mesh.pull_baselines()
+        except Exception as e:
+            _log.warning("Mesh sync failed: %s", e)
+        await asyncio.sleep(300)
+
+
+mcp = FastMCP(
+    "OpenPlan",
+    json_response=True,
+    lifespan=app_lifespan,
+    instructions="OpenPlan: Waze for AI agents. Plan projects with plan(), track progress with checkpoint(), review results with review().",
+)
+
+
+@mcp.tool(
+    name="plan",
+    description="Decompose a goal into a costed route with phases, estimates, and evidence.",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+)
+async def plan_tool(
+    goal: str,
+    context: str = "",
+    replan: bool = False,
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> dict:
+    """Plan a project from a goal description."""
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
+    api_key = ctx.request_context.lifespan_context.config.get("api_key", "") if ctx else ""
+    args = {"goal": goal, "context": context, "replan": replan, "api_key": api_key}
+    return await HANDLERS["plan"](conn, args)
+
+
+@mcp.tool(
+    name="checkpoint",
+    description="Record phase completion with cost, or get current route state (no args).",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
+)
+async def checkpoint_tool(
+    phase: str | None = None,
+    actual_cost: int | None = None,
+    route_id: str | None = None,
+    project: str | None = None,
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> dict:
+    """Checkpoint a completed phase or get current state."""
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
+    api_key = ctx.request_context.lifespan_context.config.get("api_key", "") if ctx else ""
+    args = {
+        "phase": phase,
+        "actual_cost": actual_cost,
+        "route_id": route_id,
+        "project": project,
+        "api_key": api_key,
+    }
+    return await HANDLERS["checkpoint"](conn, args)
+
+
+@mcp.tool(
+    name="review",
+    description="Session retrospective — summary, deviations, learnings, self-diagnostics.",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+)
+async def review_tool(
+    route_id: str | None = None,
+    project: str | None = None,
+    ctx: Context[ServerSession, AppContext] | None = None,
+) -> dict:
+    """Review a completed route or project."""
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
+    api_key = ctx.request_context.lifespan_context.config.get("api_key", "") if ctx else ""
+    args = {"route_id": route_id, "project": project, "api_key": api_key}
+    return await HANDLERS["review"](conn, args)
+
+
+@mcp.resource(uri="openplan://{project}/route", name="Route State", description="Current route with phase statuses", mime_type="application/json")
+async def route_resource(project: str, ctx: Context[ServerSession, AppContext] | None = None) -> str:
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
     row = conn.execute(
-        "SELECT project_type FROM nodes WHERE project = ? ORDER BY created_at ASC LIMIT 1",
+        "SELECT id FROM routes WHERE project = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
         (project,),
     ).fetchone()
-    return row["project_type"] or "" if row else ""
+    if not row:
+        return json.dumps({"error": "no active route"})
+    from openplan.core.tracker import get_route_status
+    result = get_route_status(conn, row["id"])
+    return json.dumps(result)
 
 
-@_app.list_tools()
-async def list_tools() -> list:
-    return get_tools()
+@mcp.resource(uri="openplan://profiles", name="Profile", description="Personal bias and accuracy stats", mime_type="application/json")
+async def profiles_resource(ctx: Context[ServerSession, AppContext] | None = None) -> str:
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
+    api_key = ctx.request_context.lifespan_context.config.get("api_key", "") if ctx else ""
+    from openplan.core.costs import compute_personal_bias
+    bias = compute_personal_bias(conn, api_key)
+    total_checkpoints = conn.execute("SELECT COUNT(*) as cnt FROM calibration_events").fetchone()["cnt"]
+    return json.dumps({"personal_bias": bias, "total_checkpoints": total_checkpoints})
 
 
-@_app.list_prompts()
-async def list_prompts() -> list[Prompt]:
-    return [
-        Prompt(
-            name="agent_loop",
-            description="Full agent loop: init → branch → act → verify, with telemetry and calibration",
-            arguments=[PromptArgument(name="project", description="Project slug", required=True)],
-        ),
-        Prompt(
-            name="feature-plan",
-            description="Plan a new feature: explain the change, break into states, add estimates",
-            arguments=[PromptArgument(name="project", description="Project slug", required=True)],
-        ),
-    ]
+@mcp.resource(uri="openplan://sync-status", name="Sync Status", description="Mesh sync health", mime_type="application/json")
+async def sync_status_resource(ctx: Context[ServerSession, AppContext] | None = None) -> str:
+    conn = ctx.request_context.lifespan_context.conn if ctx else get_connection()
+    pending = conn.execute("SELECT COUNT(*) as cnt FROM calibration_events WHERE synced = 0").fetchone()["cnt"]
+    return json.dumps({"pending_checkpoints": pending})
 
 
-@_app.get_prompt()
-async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
-    if name == "agent_loop":
-        project = arguments.get("project", "") if arguments else ""
-        return GetPromptResult(
-            description=f"Agent loop for {project}",
-            messages=[
-                PromptMessage(role="user", content=TextContent(
-                    type="text",
-                    text=f"""You are working on project '{project}'. Use OpenPlan to track progress.
-
-Commands:
-start(project, goal, project_type?) — Create project with phases and estimates.
-  project_type helps calibration: python_cli, typescript_library, rust_library, web_app.
-  Set goal for the desired end state (comma-separated for multiple markers).
-
-complete(project, state, evidence?, actual_cost?, auto_verify?) — Complete a phase.
-  Auto-traverses to the next phase and returns updated plan health.
-
-act(project, action, target?, parent?, status?, options?, parallel?,
-    postconditions?, thought?, evidence?, expected_cost?, actual_cost?,
-    satisfies_goal?, dry_run?) — The only mutation tool.
-  Sub-operations: traverse, branch (via options with auto-sequence),
-  status update, abandon, prune, revert, verify (with satisfies_goal),
-  set_goal, dry_run (read without write).
-
-recommend(project?, query?, target?, sequence?, cursor?, detail?) — Read tool.
-  Default (no params): best-next-target with A* path + project health.
-  query=: full-text search across states.
-  target=: A* plan to a specific state.
-  sequence=: simulate a chain of actions.
-  detail=true: include cost baselines, self-tuning, estimation accuracy.
-
-export(project, format?) — JSON / GraphML / adjacency matrix of the full graph.
-
-Workflow:
-  start(project_type=...) → complete × N → recommend
-  When done: act(action="verify", satisfies_goal="criterion") to tick goal markers.
-  Use recommend(query=...) to search past decisions.
-  Use export(format="graphml") to visualize the graph externally.
-
-Best practices (learned from self-hosting):
-  1. ALWAYS set project_type on start — otherwise your work is invisible to cross-project estimation.
-  2. Use satisfies_goal on verify to explicitly tick markers — subtitle matching is fragile.
-  3. Pass expected_cost on traverse to get meaningful cost_delta and calibration.""",
-                )),
-            ],
-        )
-    return GetPromptResult(description="", messages=[])
-
-
-@_app.list_resources()
-async def list_resources(req: Any = None) -> ListResourcesResult:
-    conn = get_conn()
-    cursor = req.params.cursor if req and hasattr(req, "params") and req.params else None
-    resources: list[Resource] = [
-        Resource(uri="openplan://projects", name="All Projects", description="All projects with state counts", mimeType="application/json"),
-        Resource(uri="openplan://analytics", name="Analytics", description="Cross-project analytics and anomaly detection", mimeType="application/json"),
-        Resource(uri="openplan://tuning", name="Global Tuning", description="Per-action tuning statistics across all projects", mimeType="application/json"),
-    ]
-    page_size = 20
-    if cursor:
-        project_rows = conn.execute(
-            "SELECT DISTINCT project FROM nodes WHERE project > ? ORDER BY project LIMIT ?",
-            (cursor, page_size),
-        ).fetchall()
-    else:
-        project_rows = conn.execute(
-            "SELECT DISTINCT project FROM nodes ORDER BY project LIMIT ?",
-            (page_size,),
-        ).fetchall()
-    for row in project_rows:
-        p = row["project"]
-        resources.append(Resource(uri=f"openplan://{p}/graph", name=f"{p} Graph", description=f"Full graph for {p}", mimeType="application/json"))
-        resources.append(Resource(uri=f"openplan://{p}/edges", name=f"{p} Edges", description=f"All edges for {p}", mimeType="application/json"))
-        resources.append(Resource(uri=f"openplan://{p}/health", name=f"{p} Health", description=f"Health snapshot for {p}", mimeType="application/json"))
-    next_cursor = project_rows[-1]["project"] if len(project_rows) == page_size else None
-    return ListResourcesResult(resources=resources, nextCursor=next_cursor)
-
-
-@_app.read_resource()
-async def read_resource(uri: str) -> ReadResourceResult:
-    conn = get_conn()
-    if uri == "openplan://projects":
-        rows = conn.execute("SELECT project, COUNT(*) AS cnt FROM nodes GROUP BY project ORDER BY project").fetchall()
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps([dict(r) for r in rows]))])
-    if uri == "openplan://analytics":
-        data = compute_analytics(conn)
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(data))])
-    if uri == "openplan://tuning":
-        tuning: dict[str, Any] = {}
-        for r in conn.execute("SELECT key, value FROM meta WHERE key LIKE 'tuning:%'"):
-            key = r["key"][7:]
-            try:
-                tuning[key] = json.loads(r["value"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(tuning))])
-    from openplan.core.graph import _graph_health as _gh
-    from openplan.core.export import export as _export
-    if uri.endswith("/graph"):
-        project = uri.split("/")[-2]
-        data = _export(project, conn)
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(data))])
-    if uri.endswith("/edges"):
-        project = uri.split("/")[-2]
-        edges = [dict(r) for r in conn.execute("SELECT e.* FROM edges e JOIN nodes n ON n.id = e.source_id WHERE n.project = ? ORDER BY e.source_id", (project,)).fetchall()]
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(edges))])
-    if uri.endswith("/health"):
-        project = uri.split("/")[-2]
-        health = _gh(project, conn)
-        return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="application/json", text=json.dumps(health))])
-    return ReadResourceResult(contents=[TextResourceContents(uri=uri, mimeType="text/plain", text=f"Resource not found: {uri}")])
-
-
-@_app.call_tool()
-async def call_tool(name: str, arguments: dict) -> CallToolResult:
-    from mcp.types import CallToolResult as _CTR, TextContent as _TC
-    handler = HANDLERS.get(name)
-    if not handler:
-        return _CTR(content=[_TC(type="text", text=json.dumps({"ok": False, "error": {"code": "UNKNOWN", "message": f"Unknown tool: {name}"}}))], isError=True)
-    try:
-        result = await handler(arguments)
-        if isinstance(result, dict):
-            text = json.dumps(result)
-            return _CTR(content=[_TC(type="text", text=text)], structuredContent=result)
-        return result
-    except OpenPlanError as e:
-        err_data = {"ok": False, "error": {"code": e.code, "message": e.message}}
-        return _CTR(content=[_TC(type="text", text=json.dumps(err_data))], structuredContent=err_data, isError=True)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except Exception as e:
-        err_data = {"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}
-        return _CTR(content=[_TC(type="text", text=json.dumps(err_data))], structuredContent=err_data, isError=True)
-
-
-def _maintenance_loop(conn: Any, config: dict, write_lock: threading.Lock, queue: list, queue_lock: threading.Lock, stop_event: threading.Event) -> None:
-    interval = config.get("maintenance_interval_minutes", 5) * 60.0
-    while not stop_event.is_set():
-        if stop_event.wait(interval):
-            break
-        notifs = _maintenance_cycle(conn, config, write_lock)
-        if not write_lock.acquire(timeout=2.0):
-            continue
-        try:
-            _propagate(conn, config)
-            endpoint = config.get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
-            if endpoint:
-                _sync_telemetry(conn, endpoint)
-        finally:
-            write_lock.release()
-        with queue_lock:
-            queue.extend(notifs)
-
-
-async def main() -> None:
-    global _config, _conn, _SESSION_ID, _CONN
-    config = load_config()
-    set_config(config)
-    conn = get_connection(config.get("db_path", "openplan.db"))
-    set_conn(conn)
-    _CONN = conn
-    conn = get_conn()
-    init_db(conn)
-    session_id = f"{_SESSION_ID}:{os.environ.get('OPENCODE_SESSION_ID', '')}" if _SESSION_ID else os.environ.get("OPENCODE_SESSION_ID", "")
-    if not session_id:
-        session_id = _resolve_session_id(conn)
-    set_session_id(session_id)
-    _telemetry.set_conn(conn)
-    _telemetry.reload_from_events()
-    _ensure_telemetry_schema(conn)
-
-    api_url = config.get("api_url", "") or os.environ.get("OPENPLAN_API_URL", "")
-    if api_url:
-        imported = _import_calibration(conn, api_url)
-        if imported:
-            _log.info("Telemetry: imported %d global calibration baselines from %s", imported, api_url)
-
-    atexit.register(_shutdown)
-
-    notifs = _maintenance_cycle(conn, config, _write_lock)
-    with _notification_lock:
-        _notification_queue.extend(notifs)
-    _write_lock_acquire()
-    try:
-        _propagate(conn, config)
-        _tune(conn, config)
-    finally:
-        _write_lock_release()
-
-    maintenance_thread = threading.Thread(
-        target=_maintenance_loop,
-        args=(conn, config, _write_lock, _notification_queue, _notification_lock, _maintenance_stop),
-        daemon=True,
-    )
-    maintenance_thread.start()
-
-    from openplan.core.embedding import warmup_embeddings
-    warmup_embeddings()
-
-    async with stdio_server() as (read, write):
-        await _app.run(
-            read,
-            write,
-            InitializationOptions(
-                server_name="openplan",
-                server_version=VERSION,
-                capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=True), resources=ResourcesCapability(listChanged=True, subscribe=True)),
-            ),
-        )
+def main() -> None:
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    import anyio
-    anyio.run(main)
+    main()

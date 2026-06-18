@@ -1,15 +1,9 @@
-from openplan.handlers.init_handler import handle_init
-from openplan.handlers.start_handler import handle_start
-from openplan.handlers.complete_handler import handle_complete
-from openplan.handlers.act_handler import handle_act
-from openplan.handlers.recommend_handler import handle_recommend
-from openplan.handlers.export_handler import handle_export
+from openplan.handlers.plan_handler import handle_plan
+from openplan.handlers.checkpoint_handler import handle_checkpoint
+from openplan.handlers.review_handler import handle_review
 
 HANDLERS = {
-    "init": handle_init,
-    "start": handle_start,
-    "complete": handle_complete,
-    "act": handle_act,
-    "recommend": handle_recommend,
-    "export": handle_export,
+    "plan": handle_plan,
+    "checkpoint": handle_checkpoint,
+    "review": handle_review,
 }
