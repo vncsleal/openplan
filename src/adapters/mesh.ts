@@ -12,7 +12,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
 
   return {
     async syncCheckpoints(events: CalibrationEvent[]): Promise<boolean> {
-      if (!meshUrl) return false;
+      if (!baseUrl) return false;
 
       try {
         const batch = events.map((e) => ({
@@ -44,7 +44,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
     },
 
     async fetchBaselines(): Promise<CostBaseline[]> {
-      if (!meshUrl) return [];
+      if (!baseUrl) return [];
 
       try {
         const headers: Record<string, string> = {
@@ -76,7 +76,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
     },
 
     async isReachable(): Promise<boolean> {
-      if (!meshUrl) return false;
+      if (!baseUrl) return false;
 
       try {
         const res = await fetch(`${baseUrl}/v1/health`, {
