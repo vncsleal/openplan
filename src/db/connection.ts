@@ -2,7 +2,6 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import type { ExtractTablesWithRelations } from "drizzle-orm";
 
 type OpenPlanDb = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 

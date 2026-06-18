@@ -10,7 +10,9 @@ An [MCP](https://modelcontextprotocol.io) server that helps AI agents decompose 
 npx @openplan/mcp
 ```
 
-The server auto-configures on first run — no setup needed. Add it to your MCP client:
+The server auto-creates its config and SQLite database on first run — no setup needed.
+
+Add it to your MCP client:
 
 **opencode.json:**
 ```json
@@ -18,7 +20,7 @@ The server auto-configures on first run — no setup needed. Add it to your MCP 
   "mcp": {
     "openplan": {
       "type": "local",
-      "command": ["npx", "@openplan/mcp"]
+      "command": ["npx", "-y", "@openplan/mcp"]
     }
   }
 }
@@ -30,11 +32,13 @@ The server auto-configures on first run — no setup needed. Add it to your MCP 
   "mcpServers": {
     "openplan": {
       "command": "npx",
-      "args": ["@openplan/mcp"]
+      "args": ["-y", "@openplan/mcp"]
     }
   }
 }
 ```
+
+Or run `openplan install` to auto-detect and configure both.
 
 ## Tools (3)
 
@@ -55,13 +59,17 @@ The server auto-configures on first run — no setup needed. Add it to your MCP 
 ## CLI
 
 ```bash
-openplan                 # Start MCP server (stdio)
-openplan install         # Detect MCP clients
-openplan auth            # GitHub OAuth (placeholder)
-openplan config show     # View configuration
-openplan status          # Route table
-openplan log             # Checkpoint trail
+openplan                 # Start MCP server (stdio mode)
+openplan install         # Auto-detect and install in MCP clients
+openplan auth            # Authenticate with Mesh via GitHub OAuth
+openplan subscribe       # Stripe Checkout for Pro subscription
+openplan account         # Show identity, API key, subscription
+openplan config show     # View current configuration
+openplan status          # List routes for a project
+openplan log             # Show checkpoint trail
 ```
+
+Use `--json` on `account`, `config`, `status`, `log` for structured output. Auth supports `--no-browser`, `--clipboard`, `--with-token <key>`, and `--debug`.
 
 ## Architecture
 
@@ -69,7 +77,7 @@ openplan log             # Checkpoint trail
 core/      Domain types, pure logic, typed ports
 handlers/  MCP tool handlers — validation, wiring
 adapters/  Mesh sync, cost probes, config loaders
-db/        Drizzle schema, SQLite connection, DataStore implementation
+db/        Drizzle schema, SQLite, DataStore implementation
 ```
 
 **One rule:** Core never imports adapters or handlers. The `DataStore` port insulates core from Drizzle.
@@ -77,8 +85,9 @@ db/        Drizzle schema, SQLite connection, DataStore implementation
 ## Data
 
 - **SQLite** via `better-sqlite3` — local-first, fully offline
-- 6 tables: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences
+- 7 tables: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences, schema_version
 - Anchor file (`.openplan`) at project root for multi-session discovery
+- Optional Mesh sync to api.openplan.cc for cross-session cost learning
 
 ## Development
 
@@ -86,6 +95,7 @@ db/        Drizzle schema, SQLite connection, DataStore implementation
 npm install
 npm run dev        # tsx watch
 npm test           # vitest
+npm run test:e2e   # end-to-end against compiled dist/
 npm run build      # tsc
 npm run lint       # biome
 ```

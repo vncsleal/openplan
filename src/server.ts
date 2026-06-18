@@ -14,7 +14,7 @@ import { handleCheckpoint } from "./handlers/checkpoint-handler.js";
 import { handleReview } from "./handlers/review-handler.js";
 import { getRouteResource, getProfilesResource, getSyncStatusResource } from "./handlers/resources.js";
 import { createMeshSync } from "./adapters/mesh.js";
-import { createCostProbeProbe, createShellCostProbe } from "./adapters/cost-probe.js";
+import { createTimerCostProbe, createShellCostProbe } from "./adapters/cost-probe.js";
 import type { MeshSync } from "./core/ports.js";
 import type { StructuredError } from "./core/domain.js";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ export async function startServer(): Promise<void> {
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
   // Cost probe: use shell command if configured, otherwise timer-based
-  const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createCostProbeProbe();
+  const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createTimerCostProbe();
 
   // Background sync: push unsynced checkpoints and pull baselines every 5 minutes
   const syncInterval = setInterval(
@@ -80,7 +80,7 @@ export async function startServer(): Promise<void> {
   const server = new Server(
     {
       name: "openplan",
-      version: "0.1.0",
+      version: "0.1.8",
     },
     {
       capabilities: {

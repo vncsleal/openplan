@@ -1,4 +1,4 @@
-# OpenPlan v0.1.0 — Agent Instructions
+# OpenPlan v0.1.8 — Agent Instructions
 
 ## Identity
 
@@ -6,7 +6,7 @@ MCP server for AI-native project planning and cost tracking. `@openplan/mcp` on 
 
 ## MCP Primitives
 
-- **3 tools**: `plan(goal, context?, replan?)`, `checkpoint(phase?, actual_cost?, correct?, route_id?, project?)`, `review(route_id?, project?)`
+- **3 tools**: `plan(goal, context?, replan?, project?)`, `checkpoint(phase?, actual_cost?, correct?, route_id?, project?)`, `review(route_id?, project?)`
 - **3 resources**: `openplan://{project}/route`, `openplan://profiles`, `openplan://sync-status`
 
 ## Key Rules
@@ -20,6 +20,7 @@ MCP server for AI-native project planning and cost tracking. `@openplan/mcp` on 
 ## Commands
 
 - `npm test` — run tests with vitest
+- `npm run test:e2e` — end-to-end test against compiled dist/
 - `npm run build` — compile TypeScript with tsc
 - `npm run dev` — hot-reload dev mode
 - `npm run lint` / `npm run format` — biome

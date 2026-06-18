@@ -174,7 +174,7 @@ Interface: `start()` (snapshot before phase) → `stop()` (delta, returns null i
 
 ## Data Model
 
-6 tables in SQLite, defined as Drizzle schema (single source of truth, self-installs via `CREATE TABLE IF NOT EXISTS`):
+7 tables in SQLite (6 domain + `schema_version`), defined as Drizzle schema (single source of truth, self-installs via `CREATE TABLE IF NOT EXISTS`):
 
 | Table | Key columns | Purpose |
 |-------|-------------|---------|
@@ -305,9 +305,9 @@ Mature MCP framework, full protocol compliance, built-in Zod validation, dev too
 
 Typed query builder over SQLite — 1:1 with SQL, fully typed. Schema file is single source of truth (TypeScript compiler catches stale references at build time). Schema version table for future migrations. `:memory:` for fast, isolated tests.
 
-### Commander + @clack/prompts
+### Commander + picocolors
 
-Commander for CLI (zero deps, built-in styling). `@clack/prompts` only for the `install` command's interactive prompts. `picocolors` for coloring (zero deps, 2.5KB).
+Commander for CLI (zero deps, built-in styling). `picocolors` for coloring (zero deps, 2.5KB).
 
 ### smol-toml
 

@@ -2,7 +2,7 @@ import type { CostProbe } from "../core/ports.js";
 import { execSync } from "node:child_process";
 import type { ExecSyncOptionsWithStringEncoding } from "node:child_process";
 
-export function createCostProbeProbe(): CostProbe {
+export function createTimerCostProbe(): CostProbe {
   let startTime: number | null = null;
   let lastSnapshot: number | null = null;
 
