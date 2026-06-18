@@ -5,54 +5,44 @@ description: MCP server for project planning, cost tracking, and estimation with
 
 ## What OpenPlan Is
 
-OpenPlan is an MCP server that helps AI agents plan, track, and learn from software projects. It maintains cost estimates and phase sequences in a local SQLite database, with optional Mesh sync for cross-project learning. All 3 tools (plan, checkpoint, review) are available via MCP tool calls.
+OpenPlan is an MCP server that helps AI agents plan, track, and learn from software projects. 3 tools (plan, checkpoint, review), local SQLite, optional Mesh sync for cross-project learning.
 
 ## When to Use
 
 - Starting a new project (`plan(goal=...)`)
 - Tracking progress on each phase (`checkpoint(phase=..., actual_cost=...)`)
-- Resuming work after context loss (`checkpoint()` with no args)
+- Resuming after context loss (`checkpoint()` with no args)
 - Reviewing completed projects (`review()`)
-- Re-planning when a dead end is hit (`plan(replan=true)`)
+- Re-planning when stuck (`plan(replan=True)`)
+- Correcting a checkpoint cost (`checkpoint(phase=..., correct=...)`)
 
 ## Workflow
 
-### Starting a Project
-1. `plan(goal="Build a landing page")` — creates a route with costed phases
+1. `plan(goal="Build a landing page", context="Astro + Tailwind")` — creates a route with costed phases
 2. Implement each phase
-3. `checkpoint(phase="Scaffold + setup", actual_cost=2100)` — record progress
+3. `checkpoint(phase="Scaffold", actual_cost=2100)` — record progress
 4. Repeat for all phases
-5. `review()` — get summary, learnings, self-diagnostics
+5. `review()` — summary, learnings, self-diagnostics
 
-### Session Resume
-1. `checkpoint()` with no args — returns full route state and position
-2. Continue working from where you left off
+## Key Concepts
 
-### Re-planning
-1. `plan(goal="Same goal", replan=true)` — archives current route, creates fresh decomposition
-2. Old route preserved with abandon_reason for path learning
+- **Phase subsumption:** Checkpoints match pending phases by label substring
+- **Cumulative costs:** Multiple sessions can contribute to the same phase
+- **Correction:** `checkpoint(phase="X", correct=<value>)` fixes the last actual_cost
+- **Personal bias:** Auto-adjusted per identity, applied to future estimates
+- **Anchor file (`.openplan`):** Created by `plan()` at project root — enables session resume without knowing a route_id
 
 ## Output Interpretation
 
-### Plan Response
-- `route.phases` — ordered phases with `expected_cost` and `ci` (confidence interval)
-- `route_evidence.based_on` — source of the phase sequence (historical match or default)
-- `personal_bias` — your historical accuracy ratio across all checkpoints
-
-### Checkpoint Response
 - `deviation.ratio` — actual / expected (1.0 = on target)
-- `deviation.outcome` — "success" (≤1.3x), "partial" (≤2.0x), "failure" (>2.0x)
-- `hazards` — warnings about high-variance upcoming phases
-- `route_completed` — true when last phase is checkpointed
-
-### Review Response
-- `summary.accuracy` — min(actual/expected, expected/actual), higher is better
-- `accuracy_by_action` — per-action accuracy stats for personal calibration
-- `path_learning` — similar completed sequences for route evidence
+- `deviation.outcome` — "success" (≤1.3×), "partial" (≤2.0×), "failure" (>2.0×)
+- `hazards` — high-variance warnings for upcoming phases
+- `summary.accuracy` — min(actual/expected, expected/actual)
+- `self_diagnostics` — skip/merge/reorder rates, hazard precision/recall
 
 ## Best Practices
 
-1. **Call `checkpoint()` with no args after context loss.** It returns full state — no IDs needed.
-2. **Use `plan(replan=true)` when stuck.** It archives the old route (preserving data) and creates a fresh decomposition.
-3. **Write descriptive phase labels.** Labels like "Auth (Better Auth, magic link)" carry stack signal for cost estimation.
-4. **Report `actual_cost` accurately.** The Mesh converges through volume — individual noise averages out over thousands of checkpoints.
+1. **Call `checkpoint()` after context loss.** Returns full state — no IDs needed.
+2. **Use `plan(replan=True)` when stuck.** Archives old route, creates fresh decomposition.
+3. **Write descriptive phase labels.** Labels like "Auth (Better Auth, magic link)" carry signal for estimation.
+4. **Correct inaccurate checkpoints.** The correction is logged, not silently overwritten.
