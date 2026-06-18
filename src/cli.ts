@@ -277,6 +277,35 @@ program
     }
 
     const base = meshUrl();
+
+    // Manage existing subscription (Stripe Customer Portal)
+    if (plan === "manage") {
+      try {
+        const resp = await fetch(`${base}/v1/manage`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+        });
+        if (!resp.ok) {
+          const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+          console.error(`  ${pc.red("!")} ${err?.detail ? err.detail : `Manage failed (${resp.status})`}\n`);
+          return;
+        }
+        const data = (await resp.json()) as Record<string, unknown>;
+        const url = data.url as string;
+        console.error(`  ${pc.dim(">")}  Opening billing portal...\n`);
+        try {
+          const { execSync } = await import("node:child_process");
+          execSync(`open "${url}"`, { timeout: 3000 });
+        } catch { /* fallback */ }
+      } catch (e) {
+        console.error(`  ${pc.red("!")} Manage failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      }
+      return;
+    }
+
     try {
       const resp = await fetch(`${base}/v1/subscribe`, {
         method: "POST",
