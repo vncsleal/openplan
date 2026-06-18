@@ -114,6 +114,8 @@ function meshUrl(): string {
   return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
 }
 
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 program
   .command("auth")
   .description("Authenticate with OpenPlan Mesh (GitHub OAuth)")
@@ -126,17 +128,47 @@ program
 
       const userCode = device.user_code as string;
       const verificationUri = (device.verification_uri as string) ?? "https://github.com/login/device";
-      const interval = (device.interval as number) ?? 5;
+      let interval = (device.interval as number) ?? 5;
       const deviceCode = device.device_code as string;
+      const expiresIn = (device.expires_in as number) ?? 900;
 
-      console.error(pc.bold("\nOpenPlan Mesh Authentication\n"));
-      console.error(`1. Go to ${pc.cyan(verificationUri)}`);
-      console.error(`2. Enter code: ${pc.bold(pc.green(userCode))}`);
-      console.error("\nWaiting for you to complete GitHub authentication...");
+      // ── Display ──────────────────────────────────────────────
+      console.error(pc.bold("\n┌─ OpenPlan Mesh Authentication ─────────────────────┐"));
 
-      // Poll for completion
-      for (let i = 0; i < 120; i++) {
+      const boxWidth = 56;
+      const codeLine = `  ${pc.bgGreen(pc.black(` ${userCode} `))}`;
+      console.error(`│${" ".repeat(boxWidth - 2)}│`);
+      const pad = (n: number) => " ".repeat(Math.max(0, n));
+      console.error("|  Open this URL in your browser:                      |");
+      console.error(`|  ${pc.cyan(verificationUri)}${pad(boxWidth - 4 - verificationUri.length)}|`);
+      console.error(`|${pad(boxWidth - 2)}|`);
+      console.error(`|  Then enter this code:  ${codeLine}${pad(boxWidth - 28 - userCode.length)}|`);
+      console.error(`|${pad(boxWidth - 2)}|`);
+      const expiresStr = `Expires in ${Math.floor(expiresIn / 60)} minutes · polling every ${interval}s`;
+      console.error(`|  ${expiresStr}${pad(boxWidth - 4 - expiresStr.length)}|`);
+      console.error("└──────────────────────────────────────────────────────┘");
+
+      // ── Auto-open browser ────────────────────────────────────
+      try {
+        const { execSync } = await import("node:child_process");
+        execSync(`open "${verificationUri}"`, { timeout: 3000 });
+        console.error(pc.dim("  → Browser opened automatically"));
+      } catch {
+        // Fallback: user opens manually
+      }
+
+      console.error("");
+
+      // ── Poll ─────────────────────────────────────────────────
+      let frame = 0;
+      const maxAttempts = Math.ceil(expiresIn / interval);
+      for (let i = 0; i < maxAttempts; i++) {
+        const spinner = SPINNER[frame % SPINNER.length];
+        process.stderr.write(`\r${pc.cyan(spinner)} Waiting for GitHub authentication... `);
+        frame++;
+
         await new Promise((r) => setTimeout(r, interval * 1000));
+
         const pollResp = await fetch(`${base}/v1/auth/device/poll`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -146,6 +178,8 @@ program
         const poll = (await pollResp.json()) as Record<string, unknown>;
 
         if (poll.access_token) {
+          process.stderr.write(`\r${pc.green("✓")} GitHub authentication complete!          \n`);
+
           // Exchange access token for an API key
           const keyResp = await fetch(`${base}/v1/api/keys`, {
             method: "POST",
@@ -165,13 +199,22 @@ program
         }
 
         if (poll.error === "authorization_pending") continue;
-        if (poll.error === "slow_down") continue;
+        if (poll.error === "slow_down") {
+          interval += 5;
+          continue;
+        }
         if (poll.error === "expired_token") {
-          console.error(pc.red("\nAuthentication session expired. Run `openplan auth` again."));
+          process.stderr.write(`\r${pc.red("✗")} Session expired.                           \n`);
+          console.error(pc.red("\nAuthentication timed out. Run `openplan auth` again."));
+          return;
+        }
+        if (poll.error === "access_denied") {
+          process.stderr.write(`\r${pc.red("✗")} Authorization denied.                      \n`);
           return;
         }
       }
 
+      process.stderr.write(`\r${pc.red("✗")} Timed out.                                   \n`);
       console.error(pc.red("\nAuthentication timed out. Run `openplan auth` again."));
     } catch (e) {
       console.error(pc.red(`\nAuth failed: ${e instanceof Error ? e.message : "unknown error"}`));
