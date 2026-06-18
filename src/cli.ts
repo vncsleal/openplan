@@ -119,13 +119,13 @@ program
   .description("Authenticate with OpenPlan Mesh (GitHub OAuth)")
   .option("--no-browser", "Do not open browser automatically")
   .option("--clipboard", "Copy code to clipboard")
-  .action(async (options: { browser: boolean; clipboard: boolean }) => {
+  .option("--debug", "Show detailed API responses for troubleshooting")
+  .action(async (options: { browser: boolean; clipboard: boolean; debug: boolean }) => {
     const base = meshUrl();
     const isInteractive = process.stdout.isTTY && !process.env.CI;
-    const s = isInteractive ? (await import("@clack/prompts")).spinner() : null;
 
     process.on("SIGINT", () => {
-      s?.stop("Authentication cancelled");
+      console.error(`  ${pc.yellow("✗")} Authentication cancelled.\n`);
       process.exit(0);
     });
 
@@ -133,12 +133,14 @@ program
       const deviceResp = await fetch(`${base}/v1/auth/device`, { method: "POST" });
       if (!deviceResp.ok) throw new Error(`Device auth failed (${deviceResp.status})`);
       const device = (await deviceResp.json()) as Record<string, unknown>;
+      if (options.debug) console.error(pc.dim(`  [debug] device response: ${JSON.stringify(device)}`));
 
       const userCode = device.user_code as string;
       const verificationUri = (device.verification_uri as string) ?? "https://github.com/login/device";
       let interval = (device.interval as number) ?? 5;
       const deviceCode = device.device_code as string;
       const expiresIn = (device.expires_in as number) ?? 900;
+      const expiryMinutes = Math.floor(expiresIn / 60);
 
       // ── Display ──────────────────────────────────────────────
       console.error("");
@@ -148,7 +150,7 @@ program
       console.error(`     ${pc.cyan(verificationUri)}`);
       console.error("");
       console.error(`  ${pc.dim("→")}  Then enter the code:  ${pc.bold(pc.bgGreen(pc.black(` ${userCode} `)))}`);
-      console.error(`     ${pc.dim(`Expires in ${Math.floor(expiresIn / 60)} minutes`)}`);
+      console.error(`     ${pc.dim(`Expires in ${expiryMinutes} minutes`)}`);
       console.error("");
 
       // ── Clipboard ────────────────────────────────────────────
@@ -180,10 +182,17 @@ program
       }
 
       // ── Poll ─────────────────────────────────────────────────
-      s?.start("Waiting for GitHub authentication");
-
       const maxAttempts = Math.ceil(expiresIn / interval);
+      const startTime = Date.now();
+      let dots = 0;
+
       for (let i = 0; i < maxAttempts; i++) {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const remaining = Math.max(0, expiryMinutes * 60 - elapsed);
+        dots = (dots + 1) % 4;
+        const dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
+        process.stderr.write(`\r  Waiting for GitHub authentication${dotStr}  (${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")} remaining)`);
+
         await new Promise((r) => setTimeout(r, interval * 1000));
 
         const pollResp = await fetch(`${base}/v1/auth/device/poll`, {
@@ -191,11 +200,20 @@ program
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ device_code: deviceCode }),
         });
-        if (!pollResp.ok) continue;
+
+        if (!pollResp.ok) {
+          if (options.debug) {
+            const text = await pollResp.text().catch(() => "");
+            console.error(pc.dim(`\n  [debug] poll HTTP ${pollResp.status}: ${text.slice(0, 200)}`));
+          }
+          continue;
+        }
+
         const poll = (await pollResp.json()) as Record<string, unknown>;
+        if (options.debug) console.error(pc.dim(`\n  [debug] poll response: ${JSON.stringify(poll)}`));
 
         if (poll.access_token) {
-          s?.stop("GitHub authentication complete");
+          process.stderr.write(`\r  ${pc.green("✓")} GitHub authentication complete!                     \n`);
 
           const keyResp = await fetch(`${base}/v1/api/keys`, {
             method: "POST",
@@ -207,8 +225,9 @@ program
           });
           if (!keyResp.ok) throw new Error("Failed to create API key");
           const keyData = (await keyResp.json()) as Record<string, unknown>;
-          const apiKey = keyData.api_key as string;
+          if (options.debug) console.error(pc.dim(`  [debug] key response: ${JSON.stringify(keyData)}`));
 
+          const apiKey = keyData.api_key as string;
           saveConfig({ apiKey, meshUrl: base });
           console.error(`  ${pc.green("✓")} Authenticated! API key saved to config.\n`);
           return;
@@ -216,25 +235,30 @@ program
 
         if (poll.error === "authorization_pending") continue;
         if (poll.error === "slow_down") {
+          if (options.debug) console.error(pc.dim("\n  [debug] slow_down received, increasing interval"));
           interval += 5;
           continue;
         }
         if (poll.error === "expired_token") {
-          s?.stop("Session expired");
+          process.stderr.write(`\r  ${pc.red("✗")} Session expired.                               \n`);
           console.error(`  ${pc.red("✗")} Session expired. Run \`openplan auth\` again.\n`);
           return;
         }
         if (poll.error === "access_denied") {
-          s?.stop("Authorization denied");
+          process.stderr.write(`\r  ${pc.red("✗")} Authorization denied.                           \n`);
           console.error(`  ${pc.red("✗")} Authorization was denied.\n`);
           return;
         }
+
+        // Unknown error from API
+        process.stderr.write(`\r  ${pc.red("✗")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}  \n`);
+        console.error(`  ${pc.yellow("!")} Unexpected error from server: ${JSON.stringify(poll)}\n`);
+        return;
       }
 
-      s?.stop("Timed out");
-      console.error(`  ${pc.red("✗")} Timed out. Run \`openplan auth\` again.\n`);
+      process.stderr.write(`\r  ${pc.red("✗")} Timed out.                                       \n`);
+      console.error(`  ${pc.red("✗")} Timed out after ${expiryMinutes} minutes. Run \`openplan auth\` again.\n`);
     } catch (e) {
-      s?.stop("Auth failed");
       console.error(`  ${pc.red("✗")} ${e instanceof Error ? e.message : "unknown error"}\n`);
     }
   });
