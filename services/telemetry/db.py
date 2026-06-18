@@ -35,7 +35,8 @@ class _TursoHTTP:
         resp = self._client.post(
             f"{self._url}/v2/pipeline",
             json={"requests": [{"type": "execute", "stmt": stmt}]},
-            headers={"Authorization": self._auth}, timeout=10,
+            headers={"Authorization": self._auth},
+            timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -66,10 +67,19 @@ class _TursoHTTP:
 
 TURSO_URL = os.environ.get("OPENPLAN_DB_URL", "")
 if TURSO_URL:
-    _create_conn = lambda: _TursoHTTP(TURSO_URL, os.environ.get("OPENPLAN_DB_TOKEN", ""))
+    _create_conn = lambda: _TursoHTTP(
+        TURSO_URL, os.environ.get("OPENPLAN_DB_TOKEN", "")
+    )
 else:
     import sqlite3
-    _create_conn = lambda: sqlite3.connect(os.environ.get("OPENPLAN_DB_PATH", "telemetry.db"))
+
+    _db_path = os.environ.get("OPENPLAN_DB_PATH") or os.path.join(
+        os.environ.get(
+            "OPENPLAN_DATA_DIR", os.path.expanduser("~/.local/share/openplan")
+        ),
+        "telemetry.db",
+    )
+    _create_conn = lambda: sqlite3.connect(_db_path)
 
 
 def get_conn():
@@ -80,6 +90,7 @@ def get_conn():
 
 
 # ─── Schema ─────────────────────────────────────────────────────────────────
+
 
 def init_db(conn: Any) -> None:
     conn.executescript("""
@@ -149,31 +160,49 @@ def init_db(conn: Any) -> None:
             PRIMARY KEY (api_key, window_start)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )
+    """)
     conn.commit()
 
 
 # ─── Data operations ───────────────────────────────────────────────────────
 
+
 def insert_event(conn: Any, api_key: str, event: dict[str, Any]) -> None:
     conn.execute(
         "INSERT INTO calibration_events (api_key, project_type, action, expected_cost, actual_cost, outcome, session_id, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (api_key, event.get("project_type", ""), event.get("action", ""),
-         event.get("expected_cost"), event.get("actual_cost", 0),
-         event.get("outcome", "success"), event.get("session_id", ""),
-         event.get("timestamp") or time.time()),
+        (
+            api_key,
+            event.get("project_type", ""),
+            event.get("action", ""),
+            event.get("expected_cost"),
+            event.get("actual_cost", 0),
+            event.get("outcome", "success"),
+            event.get("session_id", ""),
+            event.get("timestamp") or time.time(),
+        ),
     )
 
 
-def get_calibration(conn: Any, min_samples: int = 3, min_contributors: int = 1) -> list[dict[str, Any]]:
+def get_calibration(
+    conn: Any, min_samples: int = 3, min_contributors: int = 1
+) -> list[dict[str, Any]]:
     cutoff = time.time() - 30 * 86400
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT project_type, action, actual_cost, api_key
         FROM calibration_events
         WHERE actual_cost IS NOT NULL AND actual_cost > 0
           AND created_at >= ?
         ORDER BY project_type, action
-    """, (cutoff,)).fetchall()
+    """,
+        (cutoff,),
+    ).fetchall()
 
     groups: dict[tuple[str, str], list[float]] = {}
     contributors: dict[tuple[str, str], set[str]] = {}
@@ -187,20 +216,27 @@ def get_calibration(conn: Any, min_samples: int = 3, min_contributors: int = 1) 
 
     results: list[dict[str, Any]] = []
     for (pt, action), values in groups.items():
-        if len(values) < min_samples or len(contributors[(pt, action)]) < min_contributors:
+        if (
+            len(values) < min_samples
+            or len(contributors[(pt, action)]) < min_contributors
+        ):
             continue
         sorted_vals = sorted(values)
         n = len(sorted_vals)
         trim = max(1, int(n * 0.1))
         trimmed = sorted_vals[trim:-trim]
         mean = sum(trimmed) / len(trimmed)
-        results.append({
-            "project_type": pt, "action": action,
-            "cost_tokens": round(mean, 2), "sample_count": n,
-            "p50": round(_percentile(sorted_vals, 0.5), 2),
-            "p25": round(_percentile(sorted_vals, 0.25), 2),
-            "p75": round(_percentile(sorted_vals, 0.75), 2),
-        })
+        results.append(
+            {
+                "project_type": pt,
+                "action": action,
+                "cost_tokens": round(mean, 2),
+                "sample_count": n,
+                "p50": round(_percentile(sorted_vals, 0.5), 2),
+                "p25": round(_percentile(sorted_vals, 0.25), 2),
+                "p75": round(_percentile(sorted_vals, 0.75), 2),
+            }
+        )
     return results
 
 

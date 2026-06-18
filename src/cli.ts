@@ -120,8 +120,16 @@ program
   .option("--no-browser", "Do not open browser automatically")
   .option("--clipboard", "Copy code to clipboard")
   .option("--debug", "Show detailed API responses for troubleshooting")
-  .action(async (options: { browser: boolean; clipboard: boolean; debug: boolean }) => {
+  .option("--with-token <token>", "Use an existing API key directly (for CI/headless)")
+  .action(async (options: { browser: boolean; clipboard: boolean; debug: boolean; withToken: string }) => {
     const base = meshUrl();
+
+    // Direct token mode (CI/headless fallback)
+    if (options.withToken) {
+      saveConfig({ apiKey: options.withToken, meshUrl: base });
+      console.error(`  ${pc.green("✓")} API key saved to config.\n`);
+      return;
+    }
     const isInteractive = process.stdout.isTTY && !process.env.CI;
 
     process.on("SIGINT", () => {
