@@ -22,21 +22,18 @@ program
   .option("--json", "Output in JSON format")
   .option("--no-color", "Disable color output");
 
+function meshUrl(): string {
+  return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
+}
+
+// ── install ───────────────────────────────────────────────────────────────────
+
 program
   .command("install")
   .description("Detect MCP clients and install OpenPlan")
-  .action(async () => {
-    const { confirm, isCancel } = await import("@clack/prompts");
-
-    const openplanEntry = {
-      command: "npx",
-      args: ["-y", "@openplan/mcp"],
-    };
-    const openplanLocal = {
-      type: "local",
-      command: ["npx", "-y", "@openplan/mcp"],
-      enabled: true,
-    };
+  .action(() => {
+    const openplanEntry = { command: "npx", args: ["-y", "@openplan/mcp"] };
+    const openplanLocal = { type: "local", command: ["npx", "-y", "@openplan/mcp"], enabled: true };
 
     const opencodeDir = process.env.XDG_CONFIG_HOME
       ? join(process.env.XDG_CONFIG_HOME, "opencode")
@@ -54,65 +51,59 @@ program
     const hasClaude = existsSync(claudeConfig);
 
     if (!hasOpencode && !hasClaude) {
-      console.error(pc.red("No supported MCP clients detected."));
-      console.error("Install OpenCode or Claude Desktop, then run `openplan install` again.");
+      console.error(`${pc.red("!")} No supported MCP clients detected.`);
+      console.error("  Install OpenCode or Claude Desktop, then run `openplan install` again.");
       process.exit(1);
     }
 
     const detected: string[] = [];
     if (hasOpencode) detected.push("OpenCode");
     if (hasClaude) detected.push("Claude Desktop");
-    console.error(pc.cyan(`Detected MCP clients: ${detected.join(", ")}`));
+    console.error(`  ${pc.dim(">")} Detected: ${detected.join(", ")}`);
 
-    const shouldInstall = await confirm({
-      message: `Install OpenPlan in ${detected.join(" and ")}?`,
-    });
-
-    if (isCancel(shouldInstall) || !shouldInstall) {
-      console.error(pc.yellow("Installation cancelled."));
-      process.exit(0);
-    }
-
-    if (hasOpencode) {
-      try {
-        const raw = readFileSync(opencodeConfig, "utf-8");
-        const cfg = JSON.parse(raw);
-        if (!cfg.mcp) cfg.mcp = {};
-        if (!cfg.mcp.openplan) {
-          cfg.mcp.openplan = openplanLocal;
-          writeFileSync(opencodeConfig, JSON.stringify(cfg, null, 2), "utf-8");
-          console.error(pc.green("✓ Installed in OpenCode"));
-        } else {
-          console.error(pc.yellow("→ OpenPlan already configured in OpenCode"));
+    for (const client of detected) {
+      if (client === "OpenCode") {
+        try {
+          const raw = readFileSync(opencodeConfig, "utf-8");
+          const cfg = JSON.parse(raw);
+          if (!cfg.mcp) cfg.mcp = {};
+          if (!cfg.mcp.openplan) {
+            cfg.mcp.openplan = openplanLocal;
+            writeFileSync(opencodeConfig, JSON.stringify(cfg, null, 2), "utf-8");
+            console.error(`  ${pc.green("*")} Installed in OpenCode`);
+          } else {
+            console.error(`  ${pc.yellow(">")} OpenPlan already configured in OpenCode`);
+          }
+        } catch (e) {
+          console.error(
+            `  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
         }
-      } catch (e) {
-        console.error(pc.red(`Failed to update OpenCode config: ${e instanceof Error ? e.message : "unknown error"}`));
+      }
+      if (client === "Claude Desktop") {
+        try {
+          const raw = readFileSync(claudeConfig, "utf-8");
+          const cfg = JSON.parse(raw);
+          if (!cfg.mcpServers) cfg.mcpServers = {};
+          if (!cfg.mcpServers.openplan) {
+            cfg.mcpServers.openplan = openplanEntry;
+            writeFileSync(claudeConfig, JSON.stringify(cfg, null, 2), "utf-8");
+            console.error(`  ${pc.green("*")} Installed in Claude Desktop`);
+          } else {
+            console.error(`  ${pc.yellow(">")} OpenPlan already configured in Claude Desktop`);
+          }
+        } catch (e) {
+          console.error(
+            `  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
+        }
       }
     }
 
-    if (hasClaude) {
-      try {
-        const raw = readFileSync(claudeConfig, "utf-8");
-        const cfg = JSON.parse(raw);
-        if (!cfg.mcpServers) cfg.mcpServers = {};
-        if (!cfg.mcpServers.openplan) {
-          cfg.mcpServers.openplan = openplanEntry;
-          writeFileSync(claudeConfig, JSON.stringify(cfg, null, 2), "utf-8");
-          console.error(pc.green("✓ Installed in Claude Desktop"));
-        } else {
-          console.error(pc.yellow("→ OpenPlan already configured in Claude Desktop"));
-        }
-      } catch (e) {
-        console.error(pc.red(`Failed to update Claude config: ${e instanceof Error ? e.message : "unknown error"}`));
-      }
-    }
-
-    console.error(pc.green("\nOpenPlan is ready. Restart your MCP client to start using it."));
+    console.error(`\n  ${pc.green("*")} OpenPlan is ready. Restart your MCP client.`);
   });
 
-function meshUrl(): string {
-  return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
-}
+// ── auth ─────────────────────────────────────────────────────────────────────
 
 program
   .command("auth")
@@ -124,16 +115,17 @@ program
   .action(async (options: { browser: boolean; clipboard: boolean; debug: boolean; withToken: string }) => {
     const base = meshUrl();
 
-    // Direct token mode (CI/headless fallback)
     if (options.withToken) {
       saveConfig({ apiKey: options.withToken, meshUrl: base });
-      console.error(`  ${pc.green("✓")} API key saved to config.\n`);
+      console.error(`  ${pc.green("*")} API key saved to config.\n`);
       return;
     }
+
     const isInteractive = process.stdout.isTTY && !process.env.CI;
 
     process.on("SIGINT", () => {
-      console.error(`  ${pc.yellow("✗")} Authentication cancelled.\n`);
+      process.stderr.write("\n");
+      console.error(`  ${pc.yellow("!")} Authentication cancelled.\n`);
       process.exit(0);
     });
 
@@ -141,7 +133,7 @@ program
       const deviceResp = await fetch(`${base}/v1/auth/device`, { method: "POST" });
       if (!deviceResp.ok) throw new Error(`Device auth failed (${deviceResp.status})`);
       const device = (await deviceResp.json()) as Record<string, unknown>;
-      if (options.debug) console.error(pc.dim(`  [debug] device response: ${JSON.stringify(device)}`));
+      if (options.debug) console.error(`  ${pc.dim("[debug]")} device: ${JSON.stringify(device)}`);
 
       const userCode = device.user_code as string;
       const verificationUri = (device.verification_uri as string) ?? "https://github.com/login/device";
@@ -150,18 +142,16 @@ program
       const expiresIn = (device.expires_in as number) ?? 900;
       const expiryMinutes = Math.floor(expiresIn / 60);
 
-      // ── Display ──────────────────────────────────────────────
       console.error("");
-      console.error(`  ${pc.cyan("○")}  ${pc.bold("OpenPlan Mesh Authentication")}`);
+      console.error(`  ${pc.bold("OpenPlan Mesh Authentication")}`);
       console.error("");
-      console.error(`  ${pc.dim("→")}  Open this URL in your browser:`);
+      console.error(`  ${pc.dim(">")}  Open this URL in your browser:`);
       console.error(`     ${pc.cyan(verificationUri)}`);
       console.error("");
-      console.error(`  ${pc.dim("→")}  Then enter the code:  ${pc.bold(pc.bgGreen(pc.black(` ${userCode} `)))}`);
-      console.error(`     ${pc.dim(`Expires in ${expiryMinutes} minutes`)}`);
+      console.error(`  ${pc.dim(">")}  Then enter the code:  ${pc.bold(pc.bgGreen(pc.black(` ${userCode} `)))}`);
+      console.error(`     ${pc.dim("-")}  Expires in ${expiryMinutes} minutes`);
       console.error("");
 
-      // ── Clipboard ────────────────────────────────────────────
       if (options.clipboard) {
         try {
           const { execSync } = await import("node:child_process");
@@ -170,26 +160,24 @@ program
               ? `echo "${userCode}" | pbcopy`
               : `echo "${userCode}" | xclip -selection clipboard`;
           execSync(cmd, { timeout: 2000 });
-          console.error(`  ${pc.dim("→")} Code copied to clipboard`);
+          console.error(`  ${pc.dim(">")}  Code copied to clipboard`);
           console.error("");
         } catch {
-          // clipboard unavailable on this platform
+          /* clipboard unavailable */
         }
       }
 
-      // ── Auto-open browser ────────────────────────────────────
       if (options.browser && isInteractive) {
         try {
           const { execSync } = await import("node:child_process");
           execSync(`open "${verificationUri}"`, { timeout: 3000 });
-          console.error(`  ${pc.dim("→")} Browser opened`);
+          console.error(`  ${pc.dim(">")}  Browser opened`);
           console.error("");
         } catch {
-          // Fallback: user opens manually
+          /* fallback */
         }
       }
 
-      // ── Poll ─────────────────────────────────────────────────
       const maxAttempts = Math.ceil(expiresIn / interval);
       const startTime = Date.now();
       let dots = 0;
@@ -199,7 +187,9 @@ program
         const remaining = Math.max(0, expiryMinutes * 60 - elapsed);
         dots = (dots + 1) % 4;
         const dotStr = ".".repeat(dots) + " ".repeat(3 - dots);
-        process.stderr.write(`\r  Waiting for GitHub authentication${dotStr}  (${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")} remaining)`);
+        process.stderr.write(
+          `\r  Waiting for GitHub authentication${dotStr}  ${pc.dim(`(${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")})`)}`,
+        );
 
         await new Promise((r) => setTimeout(r, interval * 1000));
 
@@ -212,17 +202,17 @@ program
         if (!pollResp.ok) {
           if (options.debug) {
             const text = await pollResp.text().catch(() => "");
-            console.error(pc.dim(`\n  [debug] poll HTTP ${pollResp.status}: ${text.slice(0, 200)}`));
+            console.error(`\n  ${pc.dim("[debug]")} poll HTTP ${pollResp.status}: ${text.slice(0, 200)}`);
           }
           continue;
         }
 
         const poll = (await pollResp.json()) as Record<string, unknown>;
-        if (options.debug) console.error(pc.dim(`\n  [debug] poll response: ${JSON.stringify(poll)}`));
+        if (options.debug) console.error(`\n  ${pc.dim("[debug]")} poll: ${JSON.stringify(poll)}`);
 
         if (poll.access_token) {
-          process.stderr.write("\r                                                     \r");
-          process.stderr.write(`  ${pc.green("✓")} GitHub authentication complete!\n`);
+          process.stderr.write("\r                                                          \r");
+          process.stderr.write(`  ${pc.green("*")} GitHub authentication complete!\n`);
 
           const keyResp = await fetch(`${base}/v1/api/keys`, {
             method: "POST",
@@ -234,47 +224,46 @@ program
           });
           if (!keyResp.ok) throw new Error("Failed to create API key");
           const keyData = (await keyResp.json()) as Record<string, unknown>;
-          if (options.debug) console.error(pc.dim(`  [debug] key response: ${JSON.stringify(keyData)}`));
+          if (options.debug) console.error(`  ${pc.dim("[debug]")} key: ${JSON.stringify(keyData)}`);
 
-          const apiKey = keyData.api_key as string;
-          saveConfig({ apiKey, meshUrl: base });
-          console.error(`  ${pc.green("✓")} Authenticated! API key saved to config.\n`);
+          saveConfig({ apiKey: keyData.api_key as string, meshUrl: base });
+          console.error(`  ${pc.green("*")} Authenticated! API key saved to config.\n`);
           return;
         }
 
         if (poll.error === "authorization_pending") continue;
         if (poll.error === "slow_down") {
-          if (options.debug) console.error(pc.dim("\n  [debug] slow_down received, increasing interval"));
           interval += 5;
           continue;
         }
         if (poll.error === "expired_token") {
-          process.stderr.write("\r                                                     \r");
-          process.stderr.write(`  ${pc.red("✗")} Session expired.\n`);
-          console.error(`  ${pc.red("✗")} Session expired. Run \`openplan auth\` again.\n`);
+          process.stderr.write("\r                                                          \r");
+          process.stderr.write(`  ${pc.red("!")} Session expired.\n`);
+          console.error(`  ${pc.red("!")} Session expired. Run \`openplan auth\` again.\n`);
           return;
         }
         if (poll.error === "access_denied") {
-          process.stderr.write("\r                                                     \r");
-          process.stderr.write(`  ${pc.red("✗")} Authorization denied.\n`);
-          console.error(`  ${pc.red("✗")} Authorization was denied.\n`);
+          process.stderr.write("\r                                                          \r");
+          process.stderr.write(`  ${pc.red("!")} Authorization denied.\n`);
           return;
         }
 
-        // Unknown error from API
-        process.stderr.write("\r                                                     \r");
-        process.stderr.write(`  ${pc.red("✗")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}\n`);
-        console.error(`  ${pc.yellow("!")} Unexpected error from server: ${JSON.stringify(poll)}\n`);
+        process.stderr.write("\r                                                          \r");
+        process.stderr.write(
+          `  ${pc.red("!")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}\n`,
+        );
         return;
       }
 
-      process.stderr.write("\r                                                     \r");
-      process.stderr.write(`  ${pc.red("✗")} Timed out.\n`);
-      console.error(`  ${pc.red("✗")} Timed out after ${expiryMinutes} minutes. Run \`openplan auth\` again.\n`);
+      process.stderr.write("\r                                                          \r");
+      process.stderr.write(`  ${pc.red("!")} Timed out.\n`);
+      console.error(`  ${pc.red("!")} Timed out after ${expiryMinutes} minutes. Run \`openplan auth\` again.\n`);
     } catch (e) {
-      console.error(`  ${pc.red("✗")} ${e instanceof Error ? e.message : "unknown error"}\n`);
+      console.error(`  ${pc.red("!")} ${e instanceof Error ? e.message : "unknown error"}\n`);
     }
   });
+
+// ── subscribe ────────────────────────────────────────────────────────────────
 
 program
   .command("subscribe")
@@ -283,7 +272,7 @@ program
   .action(async (plan: string) => {
     const config = loadConfig();
     if (!config.apiKey) {
-      console.error(pc.yellow("Not authenticated. Run `openplan auth` first."));
+      console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
       process.exit(1);
     }
 
@@ -296,34 +285,38 @@ program
       });
       if (!resp.ok) {
         const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        console.error(pc.red(err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`));
+        console.error(
+          `  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`,
+        );
         return;
       }
       const data = (await resp.json()) as Record<string, unknown>;
       const url = data.checkout_url as string;
 
-      console.error(`  ${pc.cyan("○")}  ${pc.bold("OpenPlan Pro Subscription")}`);
       console.error("");
-      console.error(`  ${pc.dim("→")}  Complete checkout at:`);
+      console.error(`  ${pc.bold("OpenPlan Subscription")}`);
+      console.error("");
+      console.error(`  ${pc.dim(">")}  Complete checkout at:`);
       console.error(`     ${pc.cyan(url)}`);
       console.error("");
-      console.error(`  ${pc.dim("→")}  Your subscription activates automatically after payment.`);
+      console.error(`  ${pc.dim("-")}  Your subscription activates automatically after payment.`);
       console.error("");
 
-      const isInteractive = process.stdout.isTTY && !process.env.CI;
-      if (isInteractive) {
+      if (process.stdout.isTTY && !process.env.CI) {
         try {
           const { execSync } = await import("node:child_process");
           execSync(`open "${url}"`, { timeout: 3000 });
-          console.error(`  ${pc.dim("→")}  Browser opened\n`);
+          console.error(`  ${pc.dim(">")}  Browser opened\n`);
         } catch {
-          // fallback
+          /* fallback */
         }
       }
     } catch (e) {
-      console.error(pc.red(`Subscribe failed: ${e instanceof Error ? e.message : "unknown error"}`));
+      console.error(`  ${pc.red("!")} Subscribe failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
     }
   });
+
+// ── account ──────────────────────────────────────────────────────────────────
 
 program
   .command("account")
@@ -340,7 +333,7 @@ program
         });
         if (resp.ok) subStatus = (await resp.json()) as Record<string, unknown>;
       } catch {
-        // Mesh unreachable — show local-only info
+        /* Mesh unreachable — show local-only info */
       }
     }
 
@@ -358,18 +351,21 @@ program
         ),
       );
     } else {
-      console.error(pc.cyan(`Identity: ${config.identityId}`));
-      console.error(pc.cyan(`Data: ${config.dataDir}`));
-      console.error(`API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
+      console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
+      console.error(`  ${pc.dim("-")}  Data: ${config.dataDir}`);
+      console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
       if (subStatus) {
         console.error(
-          `Subscription: ${pc.green((subStatus.tier as string) ?? "free")} — ${subStatus.status as string}`,
+          `  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`,
         );
       } else {
-        console.error(`Subscription: ${pc.dim("free (unauthenticated)")}`);
+        console.error(`  ${pc.dim("-")}  Subscription: ${pc.dim("free (unauthenticated)")}`);
       }
+      console.error("");
     }
   });
+
+// ── config ───────────────────────────────────────────────────────────────────
 
 program
   .command("config")
@@ -381,15 +377,20 @@ program
       if (program.opts().json) {
         console.log(JSON.stringify(config, null, 2));
       } else {
-        console.error(pc.bold(`Config file: ${getConfigPath()}`));
-        console.error(pc.bold(`Data directory: ${getDataDir()}`));
-        console.error(`Identity: ${config.identityId}`);
-        console.error(`Mesh URL: ${config.meshUrl ?? pc.dim("not configured")}`);
-        console.error(`API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
-        console.error(`Cost Probe: ${config.costProbeCommand ?? pc.dim("not configured")}`);
+        console.error(`  ${pc.dim("-")}  Config file: ${getConfigPath()}`);
+        console.error(`  ${pc.dim("-")}  Data directory: ${getDataDir()}`);
+        console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
+        console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("not configured")}`);
+        console.error(
+          `  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`,
+        );
+        console.error(`  ${pc.dim("-")}  Cost Probe: ${config.costProbeCommand ?? pc.dim("not configured")}`);
+        console.error("");
       }
     }
   });
+
+// ── status ───────────────────────────────────────────────────────────────────
 
 program
   .command("status")
@@ -399,7 +400,7 @@ program
     const config = loadConfig();
     const dbPath = join(getDataDir(), "openplan.db");
     if (!existsSync(dbPath)) {
-      console.error(pc.dim("No data found. Start by running a plan."));
+      console.error(`  ${pc.dim("-")}  No data found.`);
       return;
     }
     const db = openDatabase(dbPath);
@@ -413,14 +414,16 @@ program
       for (const r of routes) {
         const statusColor = r.status === "active" ? pc.green : r.status === "completed" ? pc.blue : pc.dim;
         console.error(
-          `${statusColor(r.status.toUpperCase())} ${pc.dim(r.id.slice(0, 8))}: ${r.goal} (expected: ${r.totalExpected ?? "?"}, actual: ${r.totalActual ?? "?"})`,
+          `  ${statusColor(r.status.toUpperCase())} ${pc.dim(r.id.slice(0, 8))}  ${r.goal}  ${pc.dim(`(${r.totalExpected ?? "?"} / ${r.totalActual ?? "?"}s)`)}`,
         );
       }
       if (routes.length === 0) {
-        console.error(pc.dim("No routes found for this project."));
+        console.error(`  ${pc.dim("-")}  No routes found for "${proj}".`);
       }
     }
   });
+
+// ── log ──────────────────────────────────────────────────────────────────────
 
 program
   .command("log")
@@ -430,7 +433,7 @@ program
     const config = loadConfig();
     const dbPath = join(getDataDir(), "openplan.db");
     if (!existsSync(dbPath)) {
-      console.error(pc.dim("No data found."));
+      console.error(`  ${pc.dim("-")}  No data found.`);
       return;
     }
     const db = openDatabase(dbPath);
@@ -443,14 +446,16 @@ program
       for (const e of events) {
         const outcomeColor = e.outcome === "completed" ? pc.green : pc.yellow;
         console.error(
-          `${pc.dim(e.createdAt.slice(0, 19))} ${outcomeColor(`[${e.outcome}]`)} ${e.action}: ${e.actualCost}s (expected ${e.expectedCost}s)`,
+          `  ${pc.dim(e.createdAt.slice(0, 19))}  ${outcomeColor(e.outcome)}  ${e.action}  ${e.actualCost}s ${pc.dim(`(expected ${e.expectedCost}s)`)}`,
         );
       }
       if (events.length === 0) {
-        console.error(pc.dim("No calibration events found."));
+        console.error(`  ${pc.dim("-")}  No calibration events found.`);
       }
     }
   });
+
+// ── Startup logic ────────────────────────────────────────────────────────────
 
 const knownCommands = program.commands.map((c) => c.name());
 const userArgs = process.argv.slice(2);
@@ -466,8 +471,6 @@ if (isHelp) {
   console.log(pkg.version);
   process.exit(0);
 } else if (firstNonFlag === "help") {
-  // Handle `help [command]` ourselves — Commander's handler doesn't
-  // flush stdout before process.exit in piped environments
   const helpCmd = userArgs[1] ? program.commands.find((c) => c.name() === userArgs[1]) : null;
   console.log(helpCmd ? helpCmd.helpInformation() : program.helpInformation());
   process.exit(0);
@@ -475,7 +478,9 @@ if (isHelp) {
   program.parse(process.argv);
 } else {
   startServer().catch((e) => {
-    console.error(pc.red("Failed to start OpenPlan MCP server:"), e);
+    console.error(
+      `${pc.red("!")} Failed to start OpenPlan MCP server: ${e instanceof Error ? e.message : "unknown error"}`,
+    );
     process.exit(1);
   });
 }
