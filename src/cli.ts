@@ -36,7 +36,7 @@ program
 
     const opencodeDir = process.env.XDG_CONFIG_HOME
       ? join(process.env.XDG_CONFIG_HOME, "opencode")
-      : join(process.env.HOME ?? "/tmp", "Library", "Application Support", "opencode");
+      : join(process.env.HOME ?? "/tmp", ".config", "opencode");
     const opencodeConfig = join(opencodeDir, "opencode.json");
     const hasOpencode = existsSync(opencodeConfig);
 

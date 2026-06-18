@@ -1,6 +1,12 @@
 import type { CostBaseline, CalibrationEvent } from "../core/domain.js";
 import type { MeshSync } from "../core/ports.js";
 
+function outcomeToMesh(outcome: CalibrationEvent["outcome"]): string {
+  if (outcome === "completed") return "success";
+  if (outcome === "abandoned") return "failure";
+  return "partial";
+}
+
 export function createMeshSync(meshUrl: string | null, apiKey: string | null): MeshSync {
   const baseUrl = meshUrl ?? "https://api.openplan.cc";
 
@@ -11,12 +17,12 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
       try {
         const batch = events.map((e) => ({
           action: e.action,
-          phase_label_tokens: e.phaseLabelTokens,
           expected_cost: e.expectedCost,
           actual_cost: e.actualCost,
-          outcome: e.outcome,
-          session_id: e.routeId,
+          outcome: outcomeToMesh(e.outcome),
+          session_id: e.routeId ?? "",
           project_type: "software",
+          timestamp: new Date(e.createdAt).getTime() / 1000,
         }));
 
         const headers: Record<string, string> = {
@@ -49,15 +55,18 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         const res = await fetch(`${baseUrl}/v1/baselines`, { headers });
         if (!res.ok) return [];
 
-        const data = (await res.json()) as Record<string, unknown>[];
-        return data.map((b: Record<string, unknown>) => ({
+        const body = (await res.json()) as Record<string, unknown>;
+        // Python API returns { baselines: [...] } or directly an array
+        const rawBaselines = (Array.isArray(body) ? body : (body.baselines as Record<string, unknown>[])) ?? [];
+
+        return rawBaselines.map((b: Record<string, unknown>) => ({
           id: crypto.randomUUID(),
-          matchLevel: mapMatchLevel(b.match_level as string | undefined),
+          matchLevel: "action" as const,
           action: (b.action as string) ?? "",
-          avgCost: (b.avgCost ?? b.p50 ?? 0) as number,
-          ciLo: (b.ciLo ?? b.p25 ?? null) as number | null,
-          ciHi: (b.ciHi ?? b.p75 ?? null) as number | null,
-          sampleCount: (b.sample_count ?? b.sampleCount ?? 0) as number,
+          avgCost: ((b.cost_tokens ?? b.p50 ?? 0) as number),
+          ciLo: ((b.p25 ?? null) as number | null),
+          ciHi: ((b.p75 ?? null) as number | null),
+          sampleCount: ((b.sample_count ?? 0) as number),
           createdAt: new Date().toISOString(),
         }));
       } catch (e) {
@@ -80,10 +89,4 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
       }
     },
   };
-}
-
-function mapMatchLevel(level: string | undefined): CostBaseline["matchLevel"] {
-  if (level === "exact") return "exact";
-  if (level === "label_keyword" || level === "label") return "label_keyword";
-  return "action";
 }
