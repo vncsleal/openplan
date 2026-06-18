@@ -42,8 +42,9 @@ class _TursoHTTP:
         data = resp.json()
         rows = []
         for result in data.get("results", []):
-            cols = [c["name"] for c in result.get("cols", [])]
-            for row_data in result.get("rows", []):
+            inner = result.get("response", {}).get("result", {})
+            cols = [c["name"] for c in inner.get("cols", [])]
+            for row_data in inner.get("rows", []):
                 rows.append(dict(zip(cols, [r.get("value") for r in row_data])))
         return rows
 
