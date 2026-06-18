@@ -114,13 +114,21 @@ function meshUrl(): string {
   return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
 program
   .command("auth")
   .description("Authenticate with OpenPlan Mesh (GitHub OAuth)")
-  .action(async () => {
+  .option("--no-browser", "Do not open browser automatically")
+  .option("--clipboard", "Copy code to clipboard")
+  .action(async (options: { browser: boolean; clipboard: boolean }) => {
     const base = meshUrl();
+    const isInteractive = process.stdout.isTTY && !process.env.CI;
+    const s = isInteractive ? (await import("@clack/prompts")).spinner() : null;
+
+    process.on("SIGINT", () => {
+      s?.stop("Authentication cancelled");
+      process.exit(0);
+    });
+
     try {
       const deviceResp = await fetch(`${base}/v1/auth/device`, { method: "POST" });
       if (!deviceResp.ok) throw new Error(`Device auth failed (${deviceResp.status})`);
@@ -133,40 +141,49 @@ program
       const expiresIn = (device.expires_in as number) ?? 900;
 
       // ── Display ──────────────────────────────────────────────
-      console.error(pc.bold("\n┌─ OpenPlan Mesh Authentication ─────────────────────┐"));
-
-      const boxWidth = 56;
-      const codeLine = `  ${pc.bgGreen(pc.black(` ${userCode} `))}`;
-      console.error(`│${" ".repeat(boxWidth - 2)}│`);
-      const pad = (n: number) => " ".repeat(Math.max(0, n));
-      console.error("|  Open this URL in your browser:                      |");
-      console.error(`|  ${pc.cyan(verificationUri)}${pad(boxWidth - 4 - verificationUri.length)}|`);
-      console.error(`|${pad(boxWidth - 2)}|`);
-      console.error(`|  Then enter this code:  ${codeLine}${pad(boxWidth - 28 - userCode.length)}|`);
-      console.error(`|${pad(boxWidth - 2)}|`);
-      const expiresStr = `Expires in ${Math.floor(expiresIn / 60)} minutes · polling every ${interval}s`;
-      console.error(`|  ${expiresStr}${pad(boxWidth - 4 - expiresStr.length)}|`);
-      console.error("└──────────────────────────────────────────────────────┘");
-
-      // ── Auto-open browser ────────────────────────────────────
-      try {
-        const { execSync } = await import("node:child_process");
-        execSync(`open "${verificationUri}"`, { timeout: 3000 });
-        console.error(pc.dim("  → Browser opened automatically"));
-      } catch {
-        // Fallback: user opens manually
-      }
-
+      console.error("");
+      console.error(`  ${pc.cyan("○")}  ${pc.bold("OpenPlan Mesh Authentication")}`);
+      console.error("");
+      console.error(`  ${pc.dim("→")}  Open this URL in your browser:`);
+      console.error(`     ${pc.cyan(verificationUri)}`);
+      console.error("");
+      console.error(`  ${pc.dim("→")}  Then enter the code:  ${pc.bold(pc.bgGreen(pc.black(` ${userCode} `)))}`);
+      console.error(`     ${pc.dim(`Expires in ${Math.floor(expiresIn / 60)} minutes`)}`);
       console.error("");
 
+      // ── Clipboard ────────────────────────────────────────────
+      if (options.clipboard) {
+        try {
+          const { execSync } = await import("node:child_process");
+          const cmd =
+            process.platform === "darwin"
+              ? `echo "${userCode}" | pbcopy`
+              : `echo "${userCode}" | xclip -selection clipboard`;
+          execSync(cmd, { timeout: 2000 });
+          console.error(`  ${pc.dim("→")} Code copied to clipboard`);
+          console.error("");
+        } catch {
+          // clipboard unavailable on this platform
+        }
+      }
+
+      // ── Auto-open browser ────────────────────────────────────
+      if (options.browser && isInteractive) {
+        try {
+          const { execSync } = await import("node:child_process");
+          execSync(`open "${verificationUri}"`, { timeout: 3000 });
+          console.error(`  ${pc.dim("→")} Browser opened`);
+          console.error("");
+        } catch {
+          // Fallback: user opens manually
+        }
+      }
+
       // ── Poll ─────────────────────────────────────────────────
-      let frame = 0;
+      s?.start("Waiting for GitHub authentication");
+
       const maxAttempts = Math.ceil(expiresIn / interval);
       for (let i = 0; i < maxAttempts; i++) {
-        const spinner = SPINNER[frame % SPINNER.length];
-        process.stderr.write(`\r${pc.cyan(spinner)} Waiting for GitHub authentication... `);
-        frame++;
-
         await new Promise((r) => setTimeout(r, interval * 1000));
 
         const pollResp = await fetch(`${base}/v1/auth/device/poll`, {
@@ -178,9 +195,8 @@ program
         const poll = (await pollResp.json()) as Record<string, unknown>;
 
         if (poll.access_token) {
-          process.stderr.write(`\r${pc.green("✓")} GitHub authentication complete!          \n`);
+          s?.stop("GitHub authentication complete");
 
-          // Exchange access token for an API key
           const keyResp = await fetch(`${base}/v1/api/keys`, {
             method: "POST",
             headers: {
@@ -194,7 +210,7 @@ program
           const apiKey = keyData.api_key as string;
 
           saveConfig({ apiKey, meshUrl: base });
-          console.error(pc.green("\n✓ Authenticated! API key saved to config."));
+          console.error(`  ${pc.green("✓")} Authenticated! API key saved to config.\n`);
           return;
         }
 
@@ -204,20 +220,22 @@ program
           continue;
         }
         if (poll.error === "expired_token") {
-          process.stderr.write(`\r${pc.red("✗")} Session expired.                           \n`);
-          console.error(pc.red("\nAuthentication timed out. Run `openplan auth` again."));
+          s?.stop("Session expired");
+          console.error(`  ${pc.red("✗")} Session expired. Run \`openplan auth\` again.\n`);
           return;
         }
         if (poll.error === "access_denied") {
-          process.stderr.write(`\r${pc.red("✗")} Authorization denied.                      \n`);
+          s?.stop("Authorization denied");
+          console.error(`  ${pc.red("✗")} Authorization was denied.\n`);
           return;
         }
       }
 
-      process.stderr.write(`\r${pc.red("✗")} Timed out.                                   \n`);
-      console.error(pc.red("\nAuthentication timed out. Run `openplan auth` again."));
+      s?.stop("Timed out");
+      console.error(`  ${pc.red("✗")} Timed out. Run \`openplan auth\` again.\n`);
     } catch (e) {
-      console.error(pc.red(`\nAuth failed: ${e instanceof Error ? e.message : "unknown error"}`));
+      s?.stop("Auth failed");
+      console.error(`  ${pc.red("✗")} ${e instanceof Error ? e.message : "unknown error"}\n`);
     }
   });
 
@@ -274,13 +292,26 @@ program
     }
 
     if (program.opts().json) {
-      console.log(JSON.stringify({ identityId: config.identityId, dataDir: config.dataDir, apiKey: config.apiKey ? "configured" : null, subscription: subStatus }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            identityId: config.identityId,
+            dataDir: config.dataDir,
+            apiKey: config.apiKey ? "configured" : null,
+            subscription: subStatus,
+          },
+          null,
+          2,
+        ),
+      );
     } else {
       console.error(pc.cyan(`Identity: ${config.identityId}`));
       console.error(pc.cyan(`Data: ${config.dataDir}`));
       console.error(`API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
       if (subStatus) {
-        console.error(`Subscription: ${pc.green((subStatus.tier as string) ?? "free")} — ${subStatus.status as string}`);
+        console.error(
+          `Subscription: ${pc.green((subStatus.tier as string) ?? "free")} — ${subStatus.status as string}`,
+        );
       } else {
         console.error(`Subscription: ${pc.dim("free (unauthenticated)")}`);
       }
