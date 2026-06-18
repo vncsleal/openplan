@@ -1,4 +1,6 @@
-import type Database from "better-sqlite3";
+import { eq, and, like } from "drizzle-orm";
+import { calibrationEvents, costBaselines } from "../db/schema.js";
+import type { Db } from "../db/connection.js";
 
 const STOP_WORDS = new Set([
   "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -36,17 +38,16 @@ export interface CostEstimate {
 }
 
 export function estimateCost(
-  sqlite: Database.Database,
+  db: Db,
   action: string,
   phaseLabel: string,
 ): CostEstimate {
   const labelTokens = tokenize(phaseLabel);
 
-  // Level 1: Phase label keyword match
   if (labelTokens) {
     const tokens = labelTokens.split(" ");
     for (const token of tokens) {
-      const rows = sqlite.prepare(`
+      const rows = db.$client.prepare(`
         SELECT AVG(actual_cost) as avg_cost, COUNT(*) as samples
         FROM calibration_events
         WHERE phase_label_tokens LIKE ? AND action = ?
@@ -61,8 +62,7 @@ export function estimateCost(
     }
   }
 
-  // Level 2: Action fallback from calibration_events
-  const actionRows = sqlite.prepare(`
+  const actionRows = db.$client.prepare(`
     SELECT AVG(actual_cost) as avg_cost, COUNT(*) as samples
     FROM calibration_events
     WHERE action = ?
@@ -74,37 +74,40 @@ export function estimateCost(
     return { expectedCost: Math.round(actionRows[0].avg_cost), ciLo: Math.round(clo), ciHi: Math.round(chi), matchLevel: "action", samples: actionRows[0].samples };
   }
 
-  // Level 3: Bundled defaults
-  const defaultRow = sqlite.prepare(`
-    SELECT avg_cost, ci_lo, ci_hi, sample_count FROM cost_baselines
-    WHERE match_level = 'default' AND action = ?
-    LIMIT 1
-  `).get(action) as { avg_cost: number; ci_lo: number; ci_hi: number; sample_count: number } | undefined;
+  const defaultRow = db.select({
+    avgCost: costBaselines.avgCost,
+    ciLo: costBaselines.ciLo,
+    ciHi: costBaselines.ciHi,
+    samples: costBaselines.sampleCount,
+  })
+    .from(costBaselines)
+    .where(and(eq(costBaselines.matchLevel, "default"), eq(costBaselines.action, action)))
+    .limit(1)
+    .get();
 
   if (defaultRow) {
     return {
-      expectedCost: Math.round(defaultRow.avg_cost),
-      ciLo: Math.round(defaultRow.ci_lo),
-      ciHi: Math.round(defaultRow.ci_hi),
+      expectedCost: Math.round(defaultRow.avgCost),
+      ciLo: Math.round(defaultRow.ciLo),
+      ciHi: Math.round(defaultRow.ciHi),
       matchLevel: "default",
-      samples: defaultRow.sample_count,
+      samples: defaultRow.samples,
     };
   }
 
-  // Ultimate fallback
   return { expectedCost: 2000, ciLo: 500, ciHi: 5000, matchLevel: "fallback", samples: 0 };
 }
 
-export function computePersonalBias(sqlite: Database.Database, apiKey?: string): { ratio: number; basedOn: number } {
+export function computePersonalBias(db: Db, apiKey?: string): { ratio: number; basedOn: number } {
   if (!apiKey) return { ratio: 1, basedOn: 0 };
 
-  const row = sqlite.prepare(`
+  const row = db.$client.prepare(`
     SELECT AVG(actual_cost / expected_cost) as bias, COUNT(*) as cnt
     FROM calibration_events
     WHERE api_key = ? AND expected_cost > 0
-  `).get(apiKey) as { bias: number | null; cnt: number };
+  `).get(apiKey) as { bias: number | null; cnt: number } | undefined;
 
-  if (row.bias !== null && row.cnt >= 3) {
+  if (row && row.bias !== null && row.cnt >= 3) {
     return { ratio: Math.round(row.bias * 100) / 100, basedOn: row.cnt };
   }
   return { ratio: 1, basedOn: 0 };

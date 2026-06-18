@@ -1,18 +1,24 @@
 import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import * as schema from "./schema.js";
 
-let _sqlite: Database.Database | null = null;
+export type Db = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 
-export function getConnection(dbPath: string): Database.Database {
-  if (_sqlite) return _sqlite;
+let _db: Db | null = null;
 
-  _sqlite = new Database(dbPath);
-  _sqlite.pragma("journal_mode = WAL");
-  _sqlite.pragma("foreign_keys = ON");
+export function getConnection(dbPath: string): Db {
+  if (_db) return _db;
 
-  initTables(_sqlite);
-  seedDefaults(_sqlite);
+  const sqlite = new Database(dbPath);
+  sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  _db = drizzle(sqlite, { schema }) as unknown as Db;
 
-  return _sqlite;
+  initTables(sqlite);
+  seedDefaults(sqlite);
+
+  return _db;
 }
 
 export function initTables(sqlite: Database.Database): void {
@@ -22,8 +28,8 @@ export function initTables(sqlite: Database.Database): void {
       project TEXT NOT NULL,
       goal TEXT NOT NULL,
       context TEXT DEFAULT '',
-      total_expected REAL NOT NULL,
-      total_actual REAL DEFAULT 0,
+      total_expected REAL,
+      total_actual REAL,
       status TEXT NOT NULL DEFAULT 'active',
       archived INTEGER NOT NULL DEFAULT 0,
       abandon_reason TEXT,
@@ -111,12 +117,5 @@ export function seedDefaults(sqlite: Database.Database): void {
 
   for (const d of defaults) {
     stmt.run(d.level, d.action, d.tokens, d.avg, d.lo, d.hi, d.samples, d.rate, now);
-  }
-}
-
-export function close(): void {
-  if (_sqlite) {
-    _sqlite.close();
-    _sqlite = null;
   }
 }

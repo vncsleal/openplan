@@ -366,17 +366,81 @@ Rule: Core never imports from adapters or handlers. Handlers wire adapters into 
 
 ## Data Model
 
-### Core tables (SQLite via Drizzle)
+### Core tables (Drizzle ORM schema)
 
-| Table | Purpose | Key columns |
-|-------|---------|-------------|
-| `routes` | Route plans | `id, project, goal, total_expected, total_actual, status, archived, abandon_reason, completed_at` |
-| `route_phases` | Route steps | `id, route_id, label, action, expected_cost, actual_cost, outcome, status, sequence` |
-| `calibration_events` | Checkpoints | `id, project, action, phase_label_tokens, expected_cost, actual_cost, outcome, synced` |
-| `cost_baselines` | Cached Mesh data | `match_level, action, phase_label_tokens, avg_cost, ci_lo, ci_hi, sample_count, success_rate` |
-| `completed_sequences` | Path learning | `id, goal_tokens, context_tokens, action_sequence, efficiency, outcome` |
+5 tables defined in `src/db/schema.ts` via `sqliteTable()`:
 
-Drizzle schema in `src/db/schema.ts`. Migrations via `drizzle-kit`.
+```typescript
+export const routes = sqliteTable("routes", {
+  id: text("id").primaryKey(),
+  project: text("project").notNull(),
+  goal: text("goal").notNull(),
+  context: text("context").default(""),
+  totalExpected: real("total_expected").notNull(),
+  totalActual: real("total_actual"),  // null = no phases checkpointed yet
+  status: text("status").notNull().default("active"),
+  archived: integer("archived", { mode: "boolean" }).notNull().default(false),
+  abandonReason: text("abandon_reason"),
+  completedAt: text("completed_at"),
+  goalTokens: text("goal_tokens").default(""),
+  contextTokens: text("context_tokens").default(""),
+  createdAt: text("created_at").notNull(),
+});
+
+export const routePhases = sqliteTable("route_phases", {
+  id: text("id").primaryKey(),
+  routeId: text("route_id").notNull().references(() => routes.id),
+  label: text("label").notNull(),
+  action: text("action").notNull(),
+  expectedCost: real("expected_cost").notNull(),
+  actualCost: real("actual_cost"),
+  outcome: text("outcome"),
+  status: text("status").notNull().default("pending"),
+  sequence: integer("sequence").notNull(),
+  labelTokens: text("label_tokens").default(""),
+  createdAt: text("created_at").notNull(),
+});
+
+export const calibrationEvents = sqliteTable("calibration_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  action: text("action").notNull(),
+  phaseLabelTokens: text("phase_label_tokens").notNull(),
+  expectedCost: real("expected_cost").notNull(),
+  actualCost: real("actual_cost").notNull(),
+  outcome: text("outcome").notNull(),
+  apiKey: text("api_key"),
+  project: text("project"),
+  synced: integer("synced", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+});
+
+export const costBaselines = sqliteTable("cost_baselines", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  matchLevel: text("match_level").notNull(),
+  action: text("action").notNull(),
+  phaseLabelTokens: text("phase_label_tokens").default(""),
+  avgCost: real("avg_cost").notNull(),
+  ciLo: real("ci_lo").notNull(),
+  ciHi: real("ci_hi").notNull(),
+  sampleCount: integer("sample_count").notNull(),
+  successRate: real("success_rate").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const completedSequences = sqliteTable("completed_sequences", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  goalTokens: text("goal_tokens").notNull(),
+  contextTokens: text("context_tokens").default(""),
+  actionSequence: text("action_sequence").notNull(),
+  totalExpected: real("total_expected").notNull(),
+  totalActual: real("total_actual").notNull(),
+  efficiency: real("efficiency").notNull(),
+  outcome: text("outcome").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+```
+
+The Drizzle schema file is the canonical source of truth — what you see is what the database has. Column names (`camelCase` in TS, `snake_case` in SQL via the first parameter to each column call). Self-installs via `CREATE TABLE IF NOT EXISTS` at startup — no migration tooling, no `drizzle-kit`. Versioned with the code in git.
 
 ### Project Anchor File (`.openplan`)
 
@@ -532,7 +596,6 @@ openplan/
 ├── package.json              # @openplan/mcp — name, bin, scripts, deps
 ├── tsconfig.json             # TypeScript config
 ├── biome.json                # Lint + format
-├── drizzle.config.ts         # Drizzle Kit config
 ├── src/
 │   ├── server.ts             # FastMCP lifespan + tool/resource registration
 │   ├── cli.ts                # Commander: init, config, auth, subscribe, status
@@ -581,9 +644,9 @@ openplan/
 
 Mature (v4.3.0, 467k weekly), active maintenance (last release 2 days ago), full MCP protocol compliance, built-in Zod validation, `npx fastmcp dev` + `npx fastmcp inspect` for dev tooling.
 
-### Why Drizzle + better-sqlite3
+### Why Drizzle ORM + better-sqlite3
 
-Type-safe SQL queries, `drizzle-kit` for migrations, adapter pattern supports switching to Turso without code changes, matches existing skill.
+Drizzle ORM wraps better-sqlite3 with typed queries and a canonical schema definition. Every query uses the query builder (`db.select().from(routes).where(...)`) — 1:1 with SQL, fully typed, no magic, no ORM overhead. The schema file at `src/db/schema.ts` is the single source of truth: column names, types, constraints, relations. Changing a column name means changing it in one file — the TypeScript compiler catches every query that references the old name at build time. No `drizzle-kit`, no migration tooling, no generated migration files. Schema self-installs via `CREATE TABLE IF NOT EXISTS` at startup.
 
 ### Why Commander + @clack/prompts
 
@@ -640,8 +703,7 @@ The **Mesh API** (`services/telemetry/` — FastAPI, Turso, Stripe, GitHub OAuth
 
 ### Database
 - [ ] Drizzle schema — 5 tables (routes, route_phases, calibration_events, cost_baselines, completed_sequences)
-- [ ] `drizzle-kit generate` produces SQL migration
-- [ ] `drizzle-kit migrate` applies on server start
+- [ ] Schema self-installs via `CREATE TABLE IF NOT EXISTS` at startup — no drizzle-kit, no migration tooling
 - [ ] WAL mode + foreign keys enabled
 
 ### Learning

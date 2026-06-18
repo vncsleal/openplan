@@ -1,22 +1,24 @@
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
-import type Database from "better-sqlite3";
 import { getConnection } from "./db/connection.js";
+import type { Db } from "./db/connection.js";
 import { MeshAdapter } from "./adapters/mesh.js";
 import { handlePlan } from "./handlers/plan-handler.js";
 import { handleCheckpoint } from "./handlers/checkpoint-handler.js";
 import { handleReview } from "./handlers/review-handler.js";
 import { loadConfig, ensureConfig } from "./config.js";
 
+let conn: Db;
+
 export function createServer(): FastMCP {
   ensureConfig();
   const config = loadConfig();
-  const conn = getConnection(config.core.dbPath);
+  conn = getConnection(config.core.dbPath);
   const mesh = new MeshAdapter(config.mesh.apiUrl, config.mesh.apiKey);
 
   const syncInterval = setInterval(async () => {
     try {
-      await mesh.syncPending(conn);
+      await mesh.syncPending(conn.$client);
     } catch {
       // retry next cycle
     }
@@ -87,7 +89,7 @@ export function createServer(): FastMCP {
     load: async () => {
       const { computePersonalBias } = await import("./core/costs.js");
       const bias = computePersonalBias(conn, config.mesh.apiKey || undefined);
-      const totalCheckpoints = conn.prepare("SELECT COUNT(*) as cnt FROM calibration_events").get() as { cnt: number };
+      const totalCheckpoints = conn.$client.prepare("SELECT COUNT(*) as cnt FROM calibration_events").get() as { cnt: number };
       return { text: JSON.stringify({ personalBias: bias, totalCheckpoints: totalCheckpoints.cnt }) };
     },
   });
@@ -98,12 +100,11 @@ export function createServer(): FastMCP {
     description: "Mesh sync health",
     mimeType: "application/json",
     load: async () => {
-      const pending = conn.prepare("SELECT COUNT(*) as cnt FROM calibration_events WHERE synced = 0").get() as { cnt: number };
+      const pending = conn.$client.prepare("SELECT COUNT(*) as cnt FROM calibration_events WHERE synced = 0").get() as { cnt: number };
       return { text: JSON.stringify({ pendingCheckpoints: pending.cnt }) };
     },
   });
 
-  // Cleanup on disconnect
   server.on("disconnect", () => {
     clearInterval(syncInterval);
   });

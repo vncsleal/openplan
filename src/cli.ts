@@ -246,16 +246,16 @@ program
     const { getConnection } = await import("./db/connection.js");
     const conn = getConnection(config.core.dbPath);
 
-    const total = conn.prepare("SELECT COUNT(*) as cnt FROM calibration_events").get() as { cnt: number };
-    const bias = conn.prepare("SELECT AVG(actual_cost / expected_cost) as b FROM calibration_events WHERE expected_cost > 0").get() as { b: number | null };
-    const routes = conn.prepare("SELECT COUNT(*) as cnt FROM routes").get() as { cnt: number };
-    const archived = conn.prepare("SELECT COUNT(*) as cnt FROM routes WHERE archived = 1").get() as { cnt: number };
+    const total = conn.$client.prepare("SELECT COUNT(*) as cnt FROM calibration_events").get() as { cnt: number };
+    const bias = conn.$client.prepare("SELECT AVG(actual_cost / expected_cost) as b FROM calibration_events WHERE expected_cost > 0").get() as { b: number | null };
+    const routesCount = conn.$client.prepare("SELECT COUNT(*) as cnt FROM routes").get() as { cnt: number };
+    const archived = conn.$client.prepare("SELECT COUNT(*) as cnt FROM routes WHERE archived = 1").get() as { cnt: number };
 
     console.log(pc.bold("\nOpenPlan Account"));
     console.log(`  Plan:         ${config.mesh.apiKey ? pc.green("Free") : pc.yellow("Free (no API key)")}`);
     console.log(`  API key:      ${config.mesh.apiKey ? pc.green("configured") : pc.dim("not set")}`);
     console.log(`  Checkpoints:  ${total.cnt}`);
-    console.log(`  Routes:       ${routes.cnt} (${archived.cnt} archived)`);
+    console.log(`  Routes:       ${routesCount.cnt} (${archived.cnt} archived)`);
     console.log(`  Personal bias: ${bias.b !== null ? (bias.b * 100).toFixed(0) + "%" : pc.dim("N/A (need 3+ checkpoints)")}`);
     console.log(`  Mesh:         ${config.mesh.apiUrl}`);
 
@@ -312,7 +312,7 @@ program
     const { getConnection } = await import("./db/connection.js");
     const conn = getConnection(config.core.dbPath);
 
-    const row = conn.prepare(
+    const row = conn.$client.prepare(
       project
         ? "SELECT id, project, goal, status FROM routes WHERE project = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1"
         : "SELECT id, project, goal, status FROM routes WHERE archived = 0 ORDER BY created_at DESC LIMIT 1"
@@ -323,7 +323,7 @@ program
       return;
     }
 
-    const phases = conn.prepare(
+    const phases = conn.$client.prepare(
       "SELECT label, action, expected_cost, actual_cost, outcome, status, sequence FROM route_phases WHERE route_id = ? ORDER BY sequence"
     ).all(row.id as string) as Array<{
       label: string; action: string; expected_cost: number; actual_cost: number | null;
@@ -343,7 +343,7 @@ program
     }
 
     // Archived routes
-    const archived = conn.prepare(
+    const archived = conn.$client.prepare(
       "SELECT id, project, goal, abandon_reason FROM routes WHERE project = ? AND archived = 1 ORDER BY created_at DESC LIMIT 3"
     ).all(row.project as string) as Array<{ id: string; project: string; goal: string; abandon_reason: string | null }>;
 
@@ -377,19 +377,19 @@ program
     }>;
 
     if (identifier) {
-      events = conn.prepare(`
+      events = conn.$client.prepare(`
         SELECT * FROM calibration_events
         WHERE project IN (SELECT project FROM routes WHERE id = ?)
         ORDER BY created_at DESC LIMIT 50
       `).all(identifier) as typeof events;
 
       if (events.length === 0) {
-        events = conn.prepare(
+        events = conn.$client.prepare(
           "SELECT * FROM calibration_events WHERE project = ? ORDER BY created_at DESC LIMIT 50"
         ).all(identifier) as typeof events;
       }
     } else {
-      events = conn.prepare(
+      events = conn.$client.prepare(
         "SELECT * FROM calibration_events ORDER BY created_at DESC LIMIT 50"
       ).all() as typeof events;
     }

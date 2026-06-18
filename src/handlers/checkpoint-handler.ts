@@ -1,8 +1,10 @@
-import type Database from "better-sqlite3";
+import { eq, and, desc } from "drizzle-orm";
+import { routes } from "../db/schema.js";
+import type { Db } from "../db/connection.js";
 import { checkpointPhase, getRouteStatus } from "../core/tracker.js";
 
 export async function handleCheckpoint(
-  sqlite: Database.Database,
+  db: Db,
   args: {
     phase?: string | null;
     actualCost?: number | null;
@@ -13,16 +15,18 @@ export async function handleCheckpoint(
 ): Promise<string> {
   const { phase, actualCost, routeId, project, apiKey } = args;
 
-  // Status mode
   if (!phase && !actualCost) {
     if (routeId) {
-      return JSON.stringify(getRouteStatus(sqlite, routeId));
+      return JSON.stringify(getRouteStatus(db, routeId));
     }
-    const active = sqlite.prepare(
-      "SELECT id, project FROM routes WHERE archived = 0 AND status = 'active' ORDER BY created_at DESC LIMIT 1"
-    ).get() as { id: string } | undefined;
+    const active = db.select({ id: routes.id, project: routes.project })
+      .from(routes)
+      .where(and(eq(routes.archived, false), eq(routes.status, "active")))
+      .orderBy(desc(routes.createdAt))
+      .limit(1)
+      .get();
     if (!active) return JSON.stringify({ error: true, message: "no active route" });
-    return JSON.stringify(getRouteStatus(sqlite, active.id));
+    return JSON.stringify(getRouteStatus(db, active.id));
   }
 
   if (!phase || actualCost === undefined || actualCost === null) {
@@ -31,15 +35,18 @@ export async function handleCheckpoint(
 
   let resolvedRouteId = routeId;
   if (!resolvedRouteId) {
-    const active = sqlite.prepare(
-      "SELECT id FROM routes WHERE archived = 0 AND status = 'active' ORDER BY created_at DESC LIMIT 1"
-    ).get() as { id: string } | undefined;
+    const active = db.select({ id: routes.id })
+      .from(routes)
+      .where(and(eq(routes.archived, false), eq(routes.status, "active")))
+      .orderBy(desc(routes.createdAt))
+      .limit(1)
+      .get();
     if (!active) return JSON.stringify({ error: true, message: "no active route — call plan() first" });
     resolvedRouteId = active.id;
   }
 
   try {
-    const result = checkpointPhase(sqlite, resolvedRouteId, phase, actualCost, apiKey);
+    const result = checkpointPhase(db, resolvedRouteId, phase, actualCost, apiKey);
     return JSON.stringify(result, null, 2);
   } catch (err) {
     return JSON.stringify({ error: true, message: (err as Error).message });

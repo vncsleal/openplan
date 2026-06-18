@@ -1,24 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import * as schema from "../src/db/schema.js";
 import { tokenize, deriveOutcome, estimateCost } from "../src/core/costs.js";
 import { planProject } from "../src/core/planner.js";
 import { checkpointPhase, getRouteStatus } from "../src/core/tracker.js";
 import { reviewRoute } from "../src/core/reviewer.js";
 import { initTables, seedDefaults } from "../src/db/connection.js";
+import type { Db } from "../src/db/connection.js";
 import type DatabaseType from "better-sqlite3";
 
-let db: DatabaseType.Database;
+let sqlite: DatabaseType.Database;
+let db: Db;
 
 beforeEach(() => {
-  db = new Database(":memory:");
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  initTables(db);
-  seedDefaults(db);
+  sqlite = new Database(":memory:");
+  sqlite.pragma("journal_mode = WAL");
+  sqlite.pragma("foreign_keys = ON");
+  initTables(sqlite);
+  seedDefaults(sqlite);
+  db = drizzle(sqlite, { schema }) as unknown as Db;
 });
 
 afterEach(() => {
-  db.close();
+  sqlite.close();
 });
 
 describe("tokenize", () => {
@@ -105,7 +110,7 @@ describe("checkpointPhase", () => {
     const routeId = plan.route.id;
     checkpointPhase(db, routeId, plan.route.phases[0].label, 500);
 
-    const status = db.prepare(
+    const status = db.$client.prepare(
       "SELECT id FROM routes WHERE archived = 0 AND status = 'active' ORDER BY created_at DESC LIMIT 1"
     ).get() as { id: string };
     const routeStatus = getRouteStatus(db, status.id);
