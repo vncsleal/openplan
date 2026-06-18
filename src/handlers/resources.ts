@@ -55,7 +55,7 @@ export function getSyncStatusResource(store: DataStore, meshReachable: boolean):
       pendingCheckpoints: unsynced.length,
       syncedCheckpoints: all.length - unsynced.length,
       buffer: Math.round((unsynced.length / Math.max(all.length, 1)) * 100),
-      version: "0.1.9",
+      version: "0.1.10",
     },
     null,
     2,

@@ -416,6 +416,66 @@ async def subscription_status(request: Request) -> dict[str, Any]:
     return {"status": "none", "tier": "free"}
 
 
+@v1.post("/manage")
+async def billing_portal(request: Request) -> dict[str, str]:
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=501, detail="Billing not configured")
+
+    auth = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    import stripe as stripe_sdk
+
+    stripe_sdk.api_key = STRIPE_SECRET_KEY
+
+    key_row = conn.execute(
+        "SELECT user_id FROM api_keys WHERE key = ?", (auth,)
+    ).fetchone()
+    if not key_row:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    sub = get_subscription(conn, key_row["user_id"])
+    if not sub:
+        raise HTTPException(status_code=400, detail="No active subscription")
+
+    try:
+        portal = stripe_sdk.billing_portal.Configuration.create(
+            business_profile={
+                "headline": "Manage your OpenPlan subscription",
+            },
+            features={
+                "customer_update": {
+                    "enabled": True,
+                    "allowed_updates": ["address", "email", "name"],
+                },
+                "invoice_history": {"enabled": True},
+                "subscription_cancel": {
+                    "enabled": True,
+                    "mode": "at_period_end",
+                    "cancellation_reason": {
+                        "enabled": True,
+                        "options": [
+                            "too_expensive",
+                            "missing_features",
+                            "unused",
+                            "other",
+                        ],
+                    },
+                },
+                "subscription_pause": {"enabled": False},
+            },
+        )
+        session = stripe_sdk.billing_portal.Session.create(
+            customer=sub["stripe_customer_id"],
+            return_url="https://openplan.cc/account",
+            configuration=portal.id,
+        )
+        return {"url": session.url}
+    except stripe_sdk.error.StripeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
 

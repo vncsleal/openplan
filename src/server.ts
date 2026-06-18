@@ -80,7 +80,7 @@ export async function startServer(): Promise<void> {
   const server = new Server(
     {
       name: "openplan",
-      version: "0.1.9",
+      version: "0.1.10",
     },
     {
       capabilities: {

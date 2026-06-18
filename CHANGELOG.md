@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 — 2026-06-18
+
+- **Feat:** `openplan subscribe manage` — Stripe Customer Portal for cancellations and billing management
+- **Chore:** Add `/privacy`, `/status`, `/success` pages to website
+- **Fix:** Stripe cancel URL scrolls to pricing section
+
 ## 0.1.9 — 2026-06-18
 
 - **Chore:** Fix all docs — README, PLAN.md, CHANGELOG, agent instructions
