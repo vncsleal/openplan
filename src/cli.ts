@@ -301,9 +301,25 @@ program
       }
       const data = (await resp.json()) as Record<string, unknown>;
       const url = data.checkout_url as string;
-      console.error(pc.bold("\nOpenPlan Pro Subscription\n"));
-      console.error(`Complete checkout at: ${pc.cyan(url)}`);
-      console.error("Your subscription activates automatically after payment.\n");
+
+      console.error(`  ${pc.cyan("○")}  ${pc.bold("OpenPlan Pro Subscription")}`);
+      console.error("");
+      console.error(`  ${pc.dim("→")}  Complete checkout at:`);
+      console.error(`     ${pc.cyan(url)}`);
+      console.error("");
+      console.error(`  ${pc.dim("→")}  Your subscription activates automatically after payment.`);
+      console.error("");
+
+      const isInteractive = process.stdout.isTTY && !process.env.CI;
+      if (isInteractive) {
+        try {
+          const { execSync } = await import("node:child_process");
+          execSync(`open "${url}"`, { timeout: 3000 });
+          console.error(`  ${pc.dim("→")}  Browser opened\n`);
+        } catch {
+          // fallback
+        }
+      }
     } catch (e) {
       console.error(pc.red(`Subscribe failed: ${e instanceof Error ? e.message : "unknown error"}`));
     }
