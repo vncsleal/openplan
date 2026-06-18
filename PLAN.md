@@ -303,7 +303,7 @@ Mature MCP framework, full protocol compliance, built-in Zod validation, dev too
 
 ### Drizzle ORM + better-sqlite3
 
-Typed query builder over SQLite — 1:1 with SQL, fully typed, no ORM overhead. Schema file is single source of truth (TypeScript compiler catches stale references). No generated migration files. Schema version table for future migrations. better-sqlite3 supports `:memory:` for fast, isolated tests.
+Typed query builder over SQLite — 1:1 with SQL, fully typed. Schema file is single source of truth (TypeScript compiler catches stale references at build time). Schema version table for future migrations. `:memory:` for fast, isolated tests.
 
 ### Commander + @clack/prompts
 
