@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9 — 2026-06-18
+
+- **Chore:** Fix all docs — README, PLAN.md, CHANGELOG, agent instructions
+- **Fix:** Version references updated throughout codebase
+- **Fix:** Unused import and doubled function name cleaned up
+- **Fix:** `createCostProbeProbe` renamed to `createTimerCostProbe`
+
 ## 0.1.8 — 2026-06-18
 
 - **Fix:** Mesh API `_TursoHTTP` adapter now correctly parses Turso response (nested `response.result` path)
