@@ -63,10 +63,10 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
           id: crypto.randomUUID(),
           matchLevel: "action" as const,
           action: (b.action as string) ?? "",
-          avgCost: ((b.cost_tokens ?? b.p50 ?? 0) as number),
-          ciLo: ((b.p25 ?? null) as number | null),
-          ciHi: ((b.p75 ?? null) as number | null),
-          sampleCount: ((b.sample_count ?? 0) as number),
+          avgCost: (b.cost_tokens ?? b.p50 ?? 0) as number,
+          ciLo: (b.p25 ?? null) as number | null,
+          ciHi: (b.p75 ?? null) as number | null,
+          sampleCount: (b.sample_count ?? 0) as number,
           createdAt: new Date().toISOString(),
         }));
       } catch (e) {
