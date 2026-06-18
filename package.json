@@ -1,0 +1,60 @@
+{
+  "name": "@openplan/mcp",
+  "version": "0.1.9",
+  "description": "Waze for AI agents — plan, track, and learn from software projects.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "openplan": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "main": "dist/cli.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vncsleal/openplan.git"
+  },
+  "keywords": [
+    "mcp",
+    "ai",
+    "planning",
+    "project-management",
+    "cost-tracking",
+    "opencode"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
+    "prepack": "npm run build",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run",
+    "test:e2e": "bash tests/dist-e2e.sh",
+    "test:watch": "vitest",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "shx": "^0.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "better-sqlite3": "^12.11.1",
+    "commander": "^15.0.0",
+    "drizzle-orm": "^0.45.2",
+    "picocolors": "^1.1.1",
+    "smol-toml": "^1.6.1"
+  }
+}

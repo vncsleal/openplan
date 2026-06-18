@@ -1,6 +1,0 @@
-include README.md
-include CHANGELOG.md
-include LICENSE
-include pyproject.toml
-recursive-include src/openplan_v3 *.py
-recursive-include tests *.py

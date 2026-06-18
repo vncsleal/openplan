@@ -1,87 +1,103 @@
-# OpenPlan
+# OpenPlan MCP Server
 
-**Waze for AI agents planning** — an MCP server that helps AI agents plan software projects efficiently by learning from every agent's cost data.
+**Waze for AI agents** — plan, track, and learn from software projects.
 
-[![PyPI version](https://img.shields.io/pypi/v/openplan-mcp?color=blue)](https://pypi.org/project/openplan-mcp/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Smithery](https://img.shields.io/badge/Smithery-available-blue?logo=data:image/svg+xml;base64,...)](https://smithery.ai/server/@vncsleal/openplan)
-
-## How it works
-
-AI agents use OpenPlan's tools to track project phases, costs, and outcomes. Every `start()` and `complete()` call generates calibration data that improves estimates for every other agent — like Waze uses every driver's trip data to give better ETAs.
-
-```
-start → complete × N → verify → recommend
-```
+An [MCP](https://modelcontextprotocol.io) server that helps AI agents decompose goals into costed execution plans, checkpoint progress with deviation tracking, and learn from past project data.
 
 ## Quick Start
 
-### Via PyPI
-
 ```bash
-pip install openplan-mcp
+npx @openplan/mcp
 ```
 
-Then add to your MCP host config:
+The server auto-creates its config and SQLite database on first run — no setup needed.
 
+Add it to your MCP client:
+
+**opencode.json:**
 ```json
 {
   "mcp": {
     "openplan": {
       "type": "local",
-      "command": ["uvx", "openplan-mcp"]
+      "command": ["npx", "-y", "@openplan/mcp"]
     }
   }
 }
 ```
 
-Or use `uvx` directly (no install needed):
-
+**claude_desktop_config.json:**
 ```json
 {
-  "command": ["uvx", "openplan-mcp"]
+  "mcpServers": {
+    "openplan": {
+      "command": "npx",
+      "args": ["-y", "@openplan/mcp"]
+    }
+  }
 }
 ```
+
+Or run `openplan install` to auto-detect and configure both.
+
+## Tools (3)
+
+| Tool | Description |
+|------|-------------|
+| `plan(goal, context?, replan?, project?)` | Decompose a goal into costed phases with estimates |
+| `checkpoint(phase?, actual_cost?, correct?, route_id?, project?)` | Record phase cost, correct data, or check status |
+| `review(route_id?, project?)` | Session retrospective with deviations, accuracy, learning |
+
+## Resources (3)
+
+| URI | Description |
+|-----|-------------|
+| `openplan://{project}/route` | Current route state and phase progress |
+| `openplan://profiles` | Personal bias and accuracy by action |
+| `openplan://sync-status` | Mesh sync health and pending checkpoints |
 
 ## CLI
 
 ```bash
-openplan                  # Start MCP server
-openplan auth login       # Authenticate with GitHub for Pro tier
-openplan auth logout      # Remove credentials
-openplan auth status      # Show authentication state
-openplan subscribe        # Start Pro subscription ($10/mo)
-openplan status           # Show OpenPlan status
+openplan                 # Start MCP server (stdio mode)
+openplan install         # Auto-detect and install in MCP clients
+openplan auth            # Authenticate with Mesh via GitHub OAuth
+openplan subscribe       # Stripe Checkout for Pro subscription
+openplan account         # Show identity, API key, subscription
+openplan config show     # View current configuration
+openplan status          # List routes for a project
+openplan log             # Show checkpoint trail
 ```
 
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `start` | One-call project kickoff: parses goal into phases, estimates costs from global baselines |
-| `complete` | Mark a phase done, attaches evidence, auto-traverses to next phase |
-| `act` | Traverse, branch, verify, set status, abandon, prune, revert |
-| `recommend` | Best next step with A* path, project health, cost estimates |
-| `export` | Export full graph as JSON / GraphML / matrix |
+Use `--json` on `account`, `config`, `status`, `log` for structured output. Auth supports `--no-browser`, `--clipboard`, `--with-token <key>`, and `--debug`.
 
 ## Architecture
 
-The MCP server runs locally. Calibration data syncs to `api.openplan.cc` (optional, anonymous by default). The cloud aggregates anonymized cost data across all users — every project improves estimates for everyone.
-
 ```
-  MCP host (OpenCode / Claude Desktop / Cursor)
-       │
-  openplan MCP server (stdlib, uvx openplan-mcp)
-       │
-       ├── local SQLite (your projects, always works offline)
-       │
-       └── api.openplan.cc (global calibration pool, optional)
+core/      Domain types, pure logic, typed ports
+handlers/  MCP tool handlers — validation, wiring
+adapters/  Mesh sync, cost probes, config loaders
+db/        Drizzle schema, SQLite, DataStore implementation
 ```
 
-## Data Privacy
+**One rule:** Core never imports adapters or handlers. The `DataStore` port insulates core from Drizzle.
 
-Only `{project_type, action, expected_cost, actual_cost, outcome}` is shared — no source code, no project names, no file paths. Anonymous by default. GitHub OAuth for Pro features.
+## Data
 
-## License
+- **SQLite** via `better-sqlite3` — local-first, fully offline
+- 7 tables: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences, schema_version
+- Anchor file (`.openplan`) at project root for multi-session discovery
+- Optional Mesh sync to api.openplan.cc for cross-session cost learning
 
-MIT
+## Development
+
+```bash
+npm install
+npm run dev        # tsx watch
+npm test           # vitest
+npm run test:e2e   # end-to-end against compiled dist/
+npm run build      # tsc
+npm run lint       # biome
+```
+
+License: MIT

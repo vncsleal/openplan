@@ -1,35 +1,11 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
+node_modules/
 dist/
-build/
-.eggs/
-
-# Virtual environment
-.venv/
-venv/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-
-# Database
 *.db
-*.db-wal
-*.db-shm
-openplan.db
-backups/
-
-# Pytest
-.pytest_cache/
-
-# Environment
 .env
-.env.local
-
-# OpenCode
-.opencode/
+.DS_Store
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+.openplan

@@ -1,0 +1,330 @@
+# OpenPlan v0.1.0
+
+**Waze for AI agents** — an MCP server that helps AI agents plan, track, and learn from software projects. 3 tools, one job each, no modes, no sub-actions.
+
+---
+
+## Principles
+
+1. **3 tools. One job each.** No modes. No sub-actions. Every tool call does exactly one thing.
+2. **The MCP server is MIT.** Free forever. Zero gating.
+3. **The Mesh is populated by everyone.** Free users contribute and benefit equally.
+4. **Local-first.** Server works fully offline. The Mesh is additive, not required.
+5. **The agent is smart. OpenPlan is a data source.** The server remembers well, it doesn't think.
+6. **SQL over ML.** Cost learning and path learning are SQL aggregates, not algorithms.
+7. **No errors for the agent.** Everything degrades gracefully. The agent never sees sync failures. Internal validation errors produce structured responses, not crashes.
+8. **Every line is exercised.** If it's not used by an agent or tested, cut it.
+9. **Agent capability is not tracked.** Personal bias per identity doesn't distinguish agent type.
+
+---
+
+## Agent Loop
+
+```
+plan  →  checkpoint  →  checkpoint  →  ...  →  review
+         checkpoint()  ← status check (any time)
+```
+
+**Plan phase:** Agent calls `plan(goal, context?)` → receives decomposed route with cost estimates, evidence, alternatives, hazards. Agent reviews and starts working.
+
+**Execute + Checkpoint phase:** Agent completes a phase, calls `checkpoint(phase, actual_cost)` → receives deviation, hazards, next phase. Cost probe runs automatically if configured; agent-reported cost is fallback.
+
+**Status check (any time):** `checkpoint()` with no args returns full route state and position.
+
+**Correction:** `checkpoint(phase, correct=<value>)` replaces the last actual_cost for that phase. Both the original and corrected values are logged for Mesh aggregate accuracy.
+
+**Review phase:** `review()` → summary, deviations, cost learning, path learning, self-diagnostics.
+
+---
+
+## Tool Surface
+
+### `plan(goal, context?, replan?)`
+
+Decompose a goal into a costed route. Returns route with phases (label, action, expected_cost, CI), route_evidence (alternatives, clusters), personal bias, archived routes.
+
+- `replan=True` archives current route and creates fresh decomposition
+- Same goal + same project = return existing route (idempotent by default)
+
+### `checkpoint(phase?, actual_cost?, correct?, route_id?, project?)`
+
+One tool, three behaviors:
+
+| Pattern | Behavior |
+|---------|----------|
+| `checkpoint("Auth", 1800)` | Record phase completion with deviation, hazards, next phase |
+| `checkpoint("Auth", correct=2000)` | Correct last actual_cost for a phase without adding a new record |
+| `checkpoint()` | Return full route state (status mode, no mutations) |
+
+Phase subsumption matches by label substring. Cumulative actual_cost across sessions. Route auto-completes on last phase.
+
+### `review(route_id?, project?)`
+
+Session retrospective: summary, deviations per phase, accuracy by action, cost learning, path learning, self_diagnostics (skip/merge/reorder rates, hazard precision/recall), mesh sync status.
+
+Zero-division protected: no actual_costs → null accuracy, empty deviations.
+
+---
+
+## MCP Surface
+
+### Tools (3)
+
+| Tool | Signature | Annotation |
+|------|-----------|------------|
+| `plan` | `(goal, context?, replan?)` | `readOnlyHint=True` |
+| `checkpoint` | `(phase?, actual_cost?, correct?, route_id?, project?)` | `destructiveHint=True` |
+| `review` | `(route_id?, project?)` | `readOnlyHint=True` |
+
+### Resources (3)
+
+| URI | Purpose |
+|-----|---------|
+| `openplan://{project}/route` | Read current route state (no mutations) |
+| `openplan://profiles` | Personal bias, accuracy by action, sample counts |
+| `openplan://sync-status` | Health check: mesh reachable, pending checkpoints, buffer, version |
+
+---
+
+## Error Model
+
+All tools return structured JSON. Errors are never thrown as MCP exceptions. Response shape:
+
+```json
+{
+  "error": {
+    "code": "<ERROR_CODE>",
+    "message": "<human-readable>",
+    "param": "<offending-parameter>",
+    "retry_after": <ms>
+  }
+}
+```
+
+| Code | When |
+|------|------|
+| `INVALID_ARGUMENT` | Bad input |
+| `NOT_FOUND` | Route or project doesn't exist |
+| `NOT_INITIALIZED` | Config missing |
+| `CONFLICT` | Route already exists with different goal |
+| `INTERNAL` | Unexpected failure |
+| `MESH_UNREACHABLE` | Background sync failed (ignorable) |
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│                MCP Host (Agent)                    │
+│  plan ── checkpoint ── review → resources          │
+└───────────────────────┬──────────────────────────┘
+                        │
+┌───────────────────────▼──────────────────────────┐
+│          OpenPlan MCP Server (local — TS)          │
+│                                                    │
+│  SQLite via better-sqlite3                         │
+│  - routes, route_phases, calibration_events        │
+│  - correction_events, cost_baselines               │
+│  - completed_sequences, schema_version             │
+│                                                    │
+│  Background sync (5 min interval):                 │
+│    - push unsynced checkpoints to Mesh             │
+│    - pull latest baselines on start                │
+│    - dual eviction: count-based + TTL-based        │
+│                                                    │
+│  Cost probe (optional, host-specific):             │
+│    - OpenCode, Claude Code, Cursor, Codex          │
+│    - start()/stop() — last stop() before           │
+│      checkpoint wins. Handles backtracking.        │
+│                                                    │
+│  Degraded mode: all tools work, cached baselines,  │
+│  no agent-visible errors                           │
+└───────────────────────┬──────────────────────────┘
+                        │ HTTPS (async, fetch)
+┌───────────────────────▼──────────────────────────┐
+│            The Mesh (api.openplan.cc)              │
+│                                                    │
+│  All checkpoints from all agents                   │
+│  Aggregates per action (token-matched)             │
+│  Completed route sequences                         │
+│  Personal baselines (per identity)                 │
+│                                                    │
+│  Auth: GitHub OAuth (device code flow)             │
+│  Billing: Stripe (Checkout + Tax)                  │
+│  Stack: Python (FastAPI, Turso, Fly.io)            │
+└────────────────────────────────────────────────────┘
+```
+
+### Architecture Boundary
+
+```
+core/ ─── domain types, pure logic, typed ports
+handlers/ ── MCP handler layer — validation, wiring
+adapters/ ── Mesh sync, config loader, cost probes
+```
+
+**Rule:** Core never imports adapters or handlers. Handlers wire adapters into core. The `DataStore` port insulates core from Drizzle — handlers create the store and inject it.
+
+### Cost Probe
+
+Interface: `start()` (snapshot before phase) → `stop()` (delta, returns null if unavailable). Configurable per host with shell command. Multiple start/stop calls per phase — last stop() before checkpoint wins. No probe configured → agent-reported cost. No probe, no error, no noise.
+
+---
+
+## Data Model
+
+7 tables in SQLite (6 domain + `schema_version`), defined as Drizzle schema (single source of truth, self-installs via `CREATE TABLE IF NOT EXISTS`):
+
+| Table | Key columns | Purpose |
+|-------|-------------|---------|
+| `routes` | id, project, goal, status, identity_id, total_expected, total_actual | Active and archived routes |
+| `route_phases` | id, route_id, label, action, expected_cost, actual_cost, status, sequence | Phases within a route |
+| `calibration_events` | id, action, phase_label_tokens, expected_cost, actual_cost, outcome, identity_id | Every checkpoint → learning data |
+| `correction_events` | id, calibration_event_id, previous_actual, corrected_actual | Checkpoint corrections → Mesh accuracy |
+| `cost_baselines` | id, match_level, action, avg_cost, ci_lo, ci_hi, sample_count | Cached Mesh aggregates |
+| `completed_sequences` | id, action_sequence, total_expected, total_actual, efficiency | Path learning from completed reviews |
+
+`schema_version` table tracks applied migrations for future schema changes.
+
+**Anchor file (`.openplan`):** Created by `plan()` at project root — maps project name to route_id. Enables multi-session discovery without the agent knowing a route_id.
+
+---
+
+## Tokenization
+
+Phase labels and goals are tokenized before storage and Mesh sync. This enables SQL-based matching without vector search or ML.
+
+**Algorithm:** Lowercase → strip punctuation → collapse whitespace → remove stop words → trim to 50 tokens.
+
+Three match levels consumed by the Mesh:
+1. **Exact** — goal keywords + phase label keywords overlap (min 5 samples)
+2. **Label keyword** — phase label keyword overlap only (min 20 samples)
+3. **Action fallback** — action type only
+
+Mesh receives token strings only, never raw labels. No ML, no vector search, no embedding infrastructure.
+
+---
+
+## Learning
+
+**Cost learning:** Every `checkpoint()` creates a `calibration_event`. Mesh aggregates at three token match levels. Personal bias per identity: `AVG(actual / expected)`.
+
+**Hazard learning:** Variance-based (CI ratio > 3.0 flagged as high-variance). Archive-based (abandon_reason patterns across 3+ projects generate structural hazards).
+
+**Path learning:** Completed sequences stored on `review()`, queried by token match at next `plan()`.
+
+All learning is SQL (`LIKE` + `GROUP BY`). No ML, no vector search.
+
+---
+
+## Multi-Session
+
+1. **`.openplan` anchor file** — any agent, any session, discovers it in the working directory.
+2. **`checkpoint()` with no args** — full state, instant position awareness.
+3. **`plan()` idempotent per goal** — same goal returns existing route. `replan=True` archives.
+4. **Cumulative phase costs** — agent A does 2000, agent B finishes with 2200, checkpoint is 4200.
+
+---
+
+## Identity
+
+Dual model:
+- **`identity_id`** — stable UUID, generated once on first run, stored locally. Never changes. Used for bias tracking and Mesh attribution.
+- **`api_key`** — Mesh auth token. Can be rotated without losing identity.
+
+Anonymous by default. GitHub OAuth links identity to a Mesh account (enables personal baselines, higher tiers).
+
+---
+
+## Harness
+
+**First-run:** Server detects no config → auto-creates config with sensible defaults. No prompts, no CLI step.
+
+**Config location:** XDG Base Directory — macOS uses `~/Library/Application Support/openplan/`, Linux uses `~/.config/openplan/`. Respects `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME`.
+
+**Config file:** TOML with env var override. `smol-toml` (zero-dependency TOML parser).
+
+**Client registration** (`opencode.json`, `claude_desktop_config.json`) is handled by `openplan install` — writes only with user consent via interactive prompts.
+
+**Host detection:** Reads `OPENCODE_SESSION_ID` etc. for host-specific behavior (cost probe defaults).
+
+---
+
+## Human CLI
+
+No args starts the MCP server (stdio). Subcommands:
+
+| Command | Purpose |
+|---------|---------|
+| `openplan install` | Detect MCP clients, ask to add OpenPlan |
+| `openplan auth` | GitHub OAuth device code flow |
+| `openplan subscribe` | Stripe Checkout Session |
+| `openplan account` | Account info, export/delete data |
+| `openplan config show` | Display effective config |
+| `openplan status [project]` | Route table, archived routes |
+| `openplan log [route\|project]` | Checkpoint trail |
+
+CLI conventions: stdout for data, stderr for messaging. `--json` on all commands. `NO_COLOR` support. picocolors for status coloring.
+
+---
+
+## Business Model
+
+| | **Free** | **Pro** | **Team** |
+|---|---|---|---|
+| **Price** | $0 | $9/mo | $49/mo |
+| **MCP server** | MIT | MIT | MIT |
+| **Baselines** | Global only | Global + personal | Global + personal + team |
+| **Seats** | 1 identity | 1 identity | 5 identities |
+| **Billing** | — | Stripe | Stripe |
+
+---
+
+## Privacy
+
+**Collected:** Action, tokenized phase label (never raw), expected/actual cost, outcome, anonymous identity ID.
+
+**Not collected:** File contents, source code, agent prompts/responses, project names (raw).
+
+**User control:** Data export and deletion via `openplan account` commands. Mesh deletes identity data within 30 days of request. Local data is never shared by the MCP server.
+
+---
+
+## Stack Decisions
+
+### TypeScript
+
+70.4% of reference MCP servers use TypeScript (Playwright, Cloudflare, Notion, Supabase). Senior TypeScript engineer maintainer — zero context-switch tax. TypeScript + Zod enforces types at build and runtime. Distribution via `npx @openplan/mcp` scoped package.
+
+### FastMCP
+
+Mature MCP framework, full protocol compliance, built-in Zod validation, dev tooling (`npx fastmcp dev` + `inspect`).
+
+### Drizzle ORM + better-sqlite3
+
+Typed query builder over SQLite — 1:1 with SQL, fully typed. Schema file is single source of truth (TypeScript compiler catches stale references at build time). Schema version table for future migrations. `:memory:` for fast, isolated tests.
+
+### Commander + picocolors
+
+Commander for CLI (zero deps, built-in styling). `picocolors` for coloring (zero deps, 2.5KB).
+
+### smol-toml
+
+Zero dependencies, tree-shakeable. TOML is the standard config format for CLI tools.
+
+### tsc only (no bundler)
+
+Official MCP servers use pure `tsc`. `npx` handles dependency installation. Simpler builds, stack traces point to real source lines.
+
+### Python stays for the Mesh
+
+The Mesh API (FastAPI, Turso, Stripe, GitHub OAuth) is a web service, not an MCP server. Rewriting would be 2x effort for no benefit.
+
+---
+
+## Observability
+
+- `openplan://sync-status` resource: mesh reachable, pending checkpoints, buffer usage, version
+- `review()` self_diagnostics: route create/archive ratio, phase-abandon rate, re-plan timing, skip/merge/reorder rates, hazard precision/recall
+- Liveness via MCP protocol ping (this is a stdio server, not a web service)
