@@ -65,8 +65,10 @@ openplan auth            # Authenticate with Mesh via GitHub OAuth
 openplan subscribe       # Stripe Checkout for Pro subscription
 openplan account         # Show identity, API key, subscription
 openplan config show     # View current configuration
+openplan mesh [on|off]   # Show or toggle Mesh sync
 openplan status          # List routes for a project
 openplan log             # Show checkpoint trail
+openplan export          # Export calibration data (Pro)
 ```
 
 Use `--json` on `account`, `config`, `status`, `log` for structured output. Auth supports `--no-browser`, `--clipboard`, `--with-token <key>`, and `--debug`.
