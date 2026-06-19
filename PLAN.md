@@ -264,6 +264,7 @@ No args starts the MCP server (stdio). Subcommands:
 | `openplan config show` | Display effective config |
 | `openplan status [project]` | Route table, archived routes |
 | `openplan log [route\|project]` | Checkpoint trail |
+| `openplan mesh [on\|off]` | Show or toggle Mesh sync |
 
 CLI conventions: stdout for data, stderr for messaging. `--json` on all commands. `NO_COLOR` support. picocolors for status coloring.
 
@@ -444,7 +445,7 @@ At that point, agent-estimate or a small Bayesian regression model becomes worth
 - **Value is in the Mesh, not the server.** The Mesh is a hosted service — that's what people pay for.
 - **Push is unlimited for everyone.** Every calibration enriches the pool. Gating push weakens the product for everyone, including paying users.
 - **Pull is what costs money.** Receiving baselines consumes infra (compute, storage, bandwidth).
-- **Mesh is opt-out, not opt-in.** Sync is ON by default. Users can disable it entirely via `OPENPLAN_DISABLE_MESH=true`, which turns off both push and pull.
+- **Mesh is opt-out, not opt-in.** Sync is ON by default. Users can disable it via `openplan mesh off`, which turns off both push and pull.
 - **No personalization on Free.** Free users get pool-only baselines. No personal bias adjustment, no custom estimates.
 - **Personal baselines are the Pro upsell.** Bayesian shrinkage that blends your calibration history with the pool prior.
 
@@ -457,7 +458,7 @@ At that point, agent-estimate or a small Bayesian regression model becomes worth
 - Pool-only baselines: global median aggregated from all identities
 - No personal bias — estimates are the same for everyone on Free
 - No data export
-- `OPENPLAN_DISABLE_MESH=true` to opt out entirely
+- `openplan mesh off` to opt out entirely
 
 ### Pro
 

@@ -8,6 +8,7 @@ import { createStore } from "./db/store.js";
 import { join, dirname } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { parse, stringify } from "smol-toml";
 import pc from "picocolors";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -409,7 +410,8 @@ program
         console.error(`  ${pc.dim("-")}  Config file: ${getConfigPath()}`);
         console.error(`  ${pc.dim("-")}  Data directory: ${getDataDir()}`);
         console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
-        console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("not configured")}`);
+        console.error(`  ${pc.dim("-")}  Mesh: ${config.meshUrl ? pc.green("enabled") : pc.dim("disabled")}`);
+        console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("none")}`);
         console.error(
           `  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`,
         );
@@ -417,6 +419,54 @@ program
         console.error("");
       }
     }
+  });
+
+// ── mesh ─────────────────────────────────────────────────────────────────────
+
+program
+  .command("mesh")
+  .description("Show or toggle Mesh sync")
+  .argument("[action]", "on | off")
+  .action((action?: string) => {
+    const config = loadConfig();
+    const dbPath = join(getDataDir(), "openplan.db");
+
+    if (action === "on") {
+      saveConfig({ meshUrl: config.meshUrl ?? "https://api.openplan.cc" });
+      console.error(`  ${pc.green("*")} Mesh sync enabled.\n`);
+      return;
+    }
+
+    if (action === "off") {
+      const tomlPath = getConfigPath();
+      try {
+        const raw = readFileSync(tomlPath, "utf-8");
+        const doc = parse(raw) as Record<string, unknown>;
+        const mesh = doc.mesh as Record<string, unknown> | undefined;
+        doc.mesh = { ...(mesh ?? {}), enabled: false, url: config.meshUrl ?? "https://api.openplan.cc" };
+        writeFileSync(tomlPath, stringify(doc), "utf-8");
+        console.error(`  ${pc.green("*")} Mesh sync disabled.\n`);
+      } catch (e) {
+        console.error(`  ${pc.red("!")} Failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      }
+      return;
+    }
+
+    // Status display
+    const meshEnabled = config.meshUrl !== null;
+    let pending = 0;
+    let synced = 0;
+    if (existsSync(dbPath)) {
+      const db = openDatabase(dbPath);
+      const store = createStore(db, config.identityId);
+      pending = store.getUnsyncedCalibrationEvents().length;
+      synced = store.getCalibrationEvents().length - pending;
+    }
+    console.error(`  ${pc.dim("-")}  Mesh: ${meshEnabled ? pc.green("enabled") : pc.red("disabled")}`);
+    console.error(`  ${pc.dim("-")}  URL: ${config.meshUrl ?? pc.dim("none")}`);
+    console.error(`  ${pc.dim("-")}  Pending: ${pending}`);
+    console.error(`  ${pc.dim("-")}  Synced: ${synced}`);
+    console.error("");
   });
 
 // ── status ───────────────────────────────────────────────────────────────────

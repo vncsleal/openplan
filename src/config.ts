@@ -70,13 +70,13 @@ export function loadConfig(): OpenPlanConfig {
   const meshSection = config.mesh as Record<string, unknown> | undefined;
   const costProbeSection = config.cost_probe as Record<string, unknown> | undefined;
 
-  const disableMesh = process.env.OPENPLAN_DISABLE_MESH === "true" || (meshSection?.enabled === false);
+  const meshEnabled = meshSection?.enabled !== false;
 
   return {
     identityId,
     projectRoot: process.env.OPENPLAN_PROJECT_ROOT ?? process.cwd(),
     dataDir: getDataDir(),
-    meshUrl: disableMesh ? null : (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc"),
+    meshUrl: meshEnabled ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc") : null,
     apiKey: process.env.OPENPLAN_API_KEY ?? (meshSection?.api_key as string | undefined) ?? null,
     costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? (costProbeSection?.command as string | undefined) ?? null,
   };
@@ -94,11 +94,14 @@ export function saveConfig(partial: Partial<OpenPlanConfig>): void {
     }
   }
 
-  if (partial.meshUrl !== undefined || partial.apiKey !== undefined) {
-    const currentMesh = existing.mesh as Record<string, unknown> | undefined;
+  const currentMesh = existing.mesh as Record<string, unknown> | undefined;
+
+  if (partial.meshUrl !== undefined || partial.apiKey !== undefined || partial.meshUrl === null) {
     existing.mesh = {
-      url: partial.meshUrl ?? (currentMesh?.url as string | undefined),
+      ...(currentMesh ?? {}),
+      url: partial.meshUrl ?? (currentMesh?.url as string | undefined) ?? "https://api.openplan.cc",
       api_key: partial.apiKey ?? (currentMesh?.api_key as string | undefined),
+      enabled: partial.meshUrl !== null,
     };
   }
 
