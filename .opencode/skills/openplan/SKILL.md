@@ -29,7 +29,7 @@ OpenPlan is an MCP server that helps AI agents plan, track, and learn from softw
 - **Phase subsumption:** Checkpoints match pending phases by label substring
 - **Cumulative costs:** Multiple sessions can contribute to the same phase
 - **Correction:** `checkpoint(phase="X", correct=<value>, route_id=id)` fixes the last actual_cost
-- **Personal bias:** Auto-adjusted per identity, applied to future estimates
+- **Personal bias:** Bayesian shrinkage blends your calibration history with the pool prior — more checkpoints = sharper estimates
 - **Anchor file (`.openplan`):** Created by `plan()` at project root — enables session resume without knowing a route_id
 - **Mesh sync:** Background sync to api.openplan.cc every 5 minutes for cross-session cost learning
 

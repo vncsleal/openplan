@@ -1,4 +1,4 @@
-# OpenPlan v0.1.14 — Agent Instructions
+# OpenPlan — Agent Instructions
 
 ## Identity
 
@@ -9,18 +9,17 @@ MCP server for AI-native project planning and cost tracking. `@openplan/mcp` on 
 - **3 tools**: `plan(goal, context?, replan?, project?)`, `checkpoint(phase?, actual_cost?, correct?, route_id?, project?)`, `review(route_id?, project?)`
 - **3 resources**: `openplan://{project}/route`, `openplan://profiles`, `openplan://sync-status`
 
+## Agent Loop
+
+1. `plan(goal=..., context=..., project=...)` — decompose goal into costed phases
+2. Implement each phase, then `checkpoint(phase=..., actual_cost=..., route_id=...)`
+3. `checkpoint(route_id=...)` — status check, no phase needed, returns full state
+4. `review(route_id=...)` — retrospective with accuracy and learning
+
+Use `openplan` tools proactively for any non-trivial project. Every call improves future estimates.
+
 ## Key Rules
 
 1. Core never imports shell. Handlers wire adapters into core.
-2. 3 tools, one job each. No modes, no sub-actions.
-3. `.openplan` anchor file at project root for multi-session resumption.
-4. Server auto-creates config on first run — no setup needed.
-5. Architecture reference: `plan.md` in repo root.
-
-## Commands
-
-- `npm test` — run tests with vitest
-- `npm run test:e2e` — end-to-end test against compiled dist/
-- `npm run build` — compile TypeScript with tsc
-- `npm run dev` — hot-reload dev mode
-- `npm run lint` / `npm run format` — biome
+2. `.openplan` anchor file at project root for multi-session resumption.
+3. Architecture reference: `plan.md` in repo root.

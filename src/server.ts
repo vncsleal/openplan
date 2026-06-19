@@ -88,7 +88,7 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "plan",
-    description: "Decompose a goal into a costed route with phases, estimates, and evidence",
+    description: "Decompose a goal into a costed route. Returns phases with estimates, evidence (hazards), personal bias, and archived routes",
     parameters: z.object({
       goal: z.string().min(1, "goal is required"),
       context: z.string().optional(),
@@ -181,7 +181,7 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "review",
-    description: "Session retrospective with summary, deviations, accuracy, cost/path learning, and diagnostics",
+    description: "Session retrospective with summary, deviations, accuracy, cost/path learning, diagnostics, and mesh sync status",
     parameters: z.object({
       route_id: z.string().optional(),
       project: z.string().optional(),
