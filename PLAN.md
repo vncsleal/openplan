@@ -271,13 +271,17 @@ CLI conventions: stdout for data, stderr for messaging. `--json` on all commands
 
 ## Business Model
 
-| | **Free** | **Pro** | **Team** |
-|---|---|---|---|
-| **Price** | $0 | $9/mo | $49/mo |
-| **MCP server** | MIT | MIT | MIT |
-| **Baselines** | Global only | Global + personal | Global + personal + team |
-| **Seats** | 1 identity | 1 identity | 5 identities |
-| **Billing** | — | Stripe | Stripe |
+| | **Free** | **Pro** |
+|---|---|---|
+| **Price** | $0 | $9/mo |
+| **MCP server** | MIT | MIT |
+| **Mesh pull** | 100/day | Unlimited |
+| **Baselines** | Pool only | Pool + personal |
+| **Personal bias** | None | Bayesian shrinkage |
+| **Data export** | — | CSV / JSON / Markdown |
+| **Billing** | — | Stripe |
+
+The MCP server is MIT — no locked features. Value is in the Mesh: the cloud calibration pool that sharpens estimates across sessions. Free users contribute to and benefit from the pool (rate limited). Pro users unlock personal baselines, unlimited pull, and export.
 
 ---
 
@@ -438,26 +442,28 @@ At that point, agent-estimate or a small Bayesian regression model becomes worth
 
 - **MCP server is MIT.** Free forever, zero gating. No code is locked.
 - **Value is in the Mesh, not the server.** The Mesh is a hosted service — that's what people pay for.
-- **Push is ilimitado para todos.** Every calibration enriches the pool. Gating push weakens the product for everyone, including paying users.
+- **Push is unlimited for everyone.** Every calibration enriches the pool. Gating push weakens the product for everyone, including paying users.
 - **Pull is what costs money.** Receiving baselines consumes infra (compute, storage, bandwidth).
+- **Mesh is opt-out, not opt-in.** Sync is ON by default. Users can disable it entirely via `OPENPLAN_DISABLE_MESH=true`, which turns off both push and pull.
+- **No personalization on Free.** Free users get pool-only baselines. No personal bias adjustment, no custom estimates.
+- **Personal baselines are the Pro upsell.** Bayesian shrinkage that blends your calibration history with the pool prior.
 
 ### Free
 
-- MCP server local (MIT) — 100% functionality, no restrictions
-- Push checkpoints to Mesh: ilimitado
-- Pull baselines from Mesh: rate limited (100 pulls/day)
-  - Applies only to Mesh sync, not local cache
-  - If limit is hit, server uses cached baselines and retries next window
-  - Agent never sees an error: degraded sync, not degraded tools
-- Baselines received: **pool only** (global median aggregated from all identities)
-- Export: no
-- CLI: complete
+- MCP server (MIT) — 3 tools, 3 resources, local SQLite, full CLI
+- Mesh sync ON by default. Push: unlimited. Pull: 100/day (24h sliding window)
+- If pull limit is hit, server uses cached baselines and retries next window
+- Agent never sees an error: degraded sync, not degraded tools
+- Pool-only baselines: global median aggregated from all identities
+- No personal bias — estimates are the same for everyone on Free
+- No data export
+- `OPENPLAN_DISABLE_MESH=true` to opt out entirely
 
 ### Pro
 
 - Everything in Free
-- Pull baselines from Mesh: ilimitado
-- **Personal baselines** — Bayesian shrinkage (partial pooling) that blends personal calibration history with pool prior:
+- Pull from Mesh: unlimited (no rate limit)
+- Personal baselines via Bayesian shrinkage:
 
   ```
   personal_estimate = (n · personal_median + κ · pool_median) / (n + κ)
@@ -466,30 +472,30 @@ At that point, agent-estimate or a small Bayesian regression model becomes worth
   - `n` = calibrations from your identity in the (action, matchLevel) bucket
   - `pool_median` = global median from the Mesh
   - `κ` = prior strength (~10, adjustable)
-  - With 0 calibrations: estimate = pool
+  - With 0 calibrations: estimate = pool (same as Free)
   - With 10 calibrations: 50% personal / 50% pool
   - With 100 calibrations: ~90% personal
-  - **Guarantee**: personal baseline is never worse than pool baseline. With few data points it converges to pool (safe). With enough data it converges to personal signal. Bayesian shrinkage is a provable improvement over either extreme.
 
-- **Export**: CSV / JSON / Markdown of your complete history (routes, phases, deviations, accuracy by action)
-- **Priority queue**: Mesh processes Pro pulls before Free pulls
+- **Guarantee**: personal baseline is never worse than pool baseline. With few data points it converges to pool (safe). With enough data it converges to your personal signal.
+- Data export: CSV / JSON / Markdown of complete history (routes, phases, deviations, accuracy by action)
+- Priority queue: Pro pulls process before Free pulls
+- GitHub OAuth for identity + Stripe for billing
 
 ### Rate limit details
 
-- Window: sliding 24h, counted server-side per identity_id
-- Push: no limit (enviar é contribuir)
-- Pull: 100/day Free, ilimitado Pro
-- Cache: baselines are cached locally in SQLite and refreshed in background (5min interval). Rate limit affects cache refresh, not MCP tool responses.
+- Window: sliding 24h, counted server-side per api_key
+- Push: no limit
+- Pull: 100/day Free, unlimited Pro
+- Cache: baselines cached locally in SQLite, refreshed in background (5min interval). Rate limit affects cache refresh, not MCP tool responses.
 
 ### Identity
 
-- **Anonymous** (no auth, no Mesh account): server works fully offline. No Mesh sync. Local-only baselines from your own calibrations. This is the "offline mode" — functional but isolated.
-- **Free** (identity_id + api_key): Mesh sync enabled. Pool baselines. Rate limited pull.
-- **Pro** (GitHub OAuth linked): Mesh sync enabled. Everything above.
+- **Free**: anonymous UUID + optional api_key. Mesh sync with rate-limited pull. Pool-only baselines.
+- **Pro**: GitHub OAuth linked to api_key. Mesh sync with unlimited pull. Personal baselines.
+- No auth = no Mesh sync. Server works fully offline. This is the "offline mode" — functional but isolated.
 
 ### Future considerations
 
-- Team plans (shared personal baselines across team identities)
 - Self-hosted Mesh enterprise (private pool, no data leaves the org)
 - Custom probes, deviation alerts, dashboards (requires GUI — not in scope for v0.x)
 
