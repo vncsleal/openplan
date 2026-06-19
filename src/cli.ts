@@ -350,7 +350,7 @@ program
 
 program
   .command("account")
-  .description("Account info, export/delete data")
+  .description("Account info and subscription status")
   .action(async () => {
     const config = loadConfig();
     const base = meshUrl();
@@ -531,6 +531,97 @@ program
       if (events.length === 0) {
         console.error(`  ${pc.dim("-")}  No calibration events found.`);
       }
+    }
+  });
+
+// ── export ──────────────────────────────────────────────────────────────────
+
+program
+  .command("export")
+  .description("Export your calibration data (Pro)")
+  .option("--format <type>", "Output format: json (default), csv, markdown")
+  .option("--project <name>", "Filter by project")
+  .action(async (options: { format: string; project: string }) => {
+    const config = loadConfig();
+    const base = meshUrl();
+    const fmt = options.format || "json";
+
+    if (!config.apiKey) {
+      // Local-only export
+      const dbPath = join(getDataDir(), "openplan.db");
+      if (!existsSync(dbPath)) {
+        console.error(`  ${pc.dim("-")}  No data found.`);
+        return;
+      }
+      const db = openDatabase(dbPath);
+      const store = createStore(db, config.identityId);
+      const routes = options.project
+        ? store.getRoutesForProject(options.project)
+        : store.getCalibrationEvents().reduce((acc: string[], e) => {
+            if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
+            return acc;
+          }, []).map((id) => store.getRoute(id)).filter(Boolean);
+      if (fmt === "json") {
+        const data = {
+          exported_at: new Date().toISOString(),
+          routes: options.project
+            ? store.getRoutesForProject(options.project).map((r) => ({
+                project: r.project,
+                goal: r.goal,
+                status: r.status,
+                phases: store.getPhases(r.id),
+              }))
+            : [],
+          calibrations: store.getCalibrationEvents(),
+        };
+        console.log(JSON.stringify(data, null, 2));
+      } else {
+        console.error(`  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`);
+      }
+      return;
+    }
+
+    // Mesh-backed export (cross-machine)
+    try {
+      const resp = await fetch(`${base}/v1/export`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+      });
+      if (!resp.ok) {
+        console.error(`  ${pc.red("!")} Export failed (${resp.status})\n`);
+        return;
+      }
+      const data = (await resp.json()) as Record<string, unknown>;
+
+      if (fmt === "csv") {
+        const calibrations = data.calibrations as Record<string, unknown>[];
+        console.log("action,expected_cost,actual_cost,outcome,session_id,created_at");
+        for (const c of calibrations) {
+          console.log(`${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`);
+        }
+      } else if (fmt === "markdown") {
+        const summary = data.summary as Record<string, unknown>;
+        const calibrations = data.calibrations as Record<string, unknown>[];
+        console.log("# OpenPlan Data Export\n");
+        console.log(`Exported at: ${new Date((data.exported_at as number) * 1000).toISOString()}`);
+        console.log(`Tier: ${data.tier}`);
+        console.log("\n## Summary\n");
+        console.log(`- Total calibrations: ${summary.total_calibrations}`);
+        console.log("\n### Accuracy by Action\n");
+        console.log("| Action | Samples | Mean Deviation | MAPE |");
+        console.log("|--------|---------|---------------|------|");
+        const accuracy = summary.accuracy_by_action as Record<string, unknown>[];
+        for (const a of accuracy) {
+          console.log(`| ${a.action} | ${a.sample_count} | ${a.mean_deviation ?? "-"} | ${a.mape ?? "-"}% |`);
+        }
+        console.log("\n## Calibration Events\n");
+        for (const c of calibrations) {
+          console.log(`- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`);
+        }
+      } else {
+        console.log(JSON.stringify(data, null, 2));
+      }
+    } catch (e) {
+      console.error(`  ${pc.red("!")} Export failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
     }
   });
 

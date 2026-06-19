@@ -260,7 +260,8 @@ No args starts the MCP server (stdio). Subcommands:
 | `openplan install` | Detect MCP clients, ask to add OpenPlan |
 | `openplan auth` | GitHub OAuth device code flow |
 | `openplan subscribe` | Stripe Checkout Session |
-| `openplan account` | Account info, export/delete data |
+| `openplan account` | Account info and subscription status |
+| `openplan export` | Export calibration data (JSON/CSV/Markdown, Mesh-backed for cross-machine) |
 | `openplan config show` | Display effective config |
 | `openplan status [project]` | Route table, archived routes |
 | `openplan log [route\|project]` | Checkpoint trail |

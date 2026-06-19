@@ -428,6 +428,85 @@ async def subscription_status(request: Request) -> dict[str, Any]:
     return {"status": "none", "tier": "free"}
 
 
+@v1.get("/export")
+async def export_data(request: Request) -> dict[str, Any]:
+    auth = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    key_row = conn.execute(
+        "SELECT user_id, tier FROM api_keys WHERE key = ?", (auth,)
+    ).fetchone()
+    if not key_row:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Export all calibration events for this API key
+    rows = conn.execute(
+        """SELECT action, phase_label_tokens, expected_cost, actual_cost,
+                  outcome, session_id, created_at
+           FROM calibration_events
+           WHERE api_key = ?
+           ORDER BY created_at DESC""",
+        (auth,),
+    ).fetchall()
+
+    events = [dict(r) for r in rows]
+
+    # Compute accuracy summary per action
+    from collections import defaultdict
+
+    by_action: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "sum_deviation": 0.0, "sum_abs_pct": 0.0}
+    )
+    for ev in events:
+        a = ev.get("action", "")
+        ec = ev.get("expected_cost") or 0
+        ac = ev.get("actual_cost") or 0
+        if ec > 0:
+            by_action[a]["count"] += 1
+            by_action[a]["sum_deviation"] += ac - ec
+            by_action[a]["sum_abs_pct"] += abs(ac - ec) / ec
+
+    accuracy = []
+    for action, data in sorted(by_action.items()):
+        mean_dev = (
+            round(data["sum_deviation"] / data["count"], 2)
+            if data["count"] > 0
+            else None
+        )
+        mape = (
+            round((data["sum_abs_pct"] / data["count"]) * 100, 1)
+            if data["count"] > 0
+            else None
+        )
+        accuracy.append(
+            {
+                "action": action,
+                "sample_count": data["count"],
+                "mean_deviation": mean_dev,
+                "mape": mape,
+            }
+        )
+
+    sub = get_subscription(conn, key_row["user_id"])
+
+    return {
+        "exported_at": time.time(),
+        "tier": key_row["tier"],
+        "subscription": {
+            "status": sub["status"] if sub else "none",
+            "tier": sub["tier"] if sub else "free",
+        }
+        if sub
+        else {"status": "none", "tier": "free"},
+        "summary": {
+            "total_calibrations": len(events),
+            "accuracy_by_action": accuracy,
+        },
+        "calibrations": events,
+    }
+
+
 @v1.post("/manage")
 async def billing_portal(request: Request) -> dict[str, str]:
     if not STRIPE_SECRET_KEY:
