@@ -22,7 +22,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
           actual_cost: e.actualCost,
           outcome: outcomeToMesh(e.outcome),
           session_id: e.routeId ?? "",
-          project_type: "software",
+          project_type: e.projectType,
           timestamp: new Date(e.createdAt).getTime() / 1000,
         }));
 

@@ -20,7 +20,6 @@ export function openDatabase(dbPath: string): OpenPlanDb {
 
 export function openInMemoryDatabase(): OpenPlanDb {
   sqlite = new Database(":memory:");
-  sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   const instance = drizzle(sqlite, { schema }) as OpenPlanDb;
   db = instance;
@@ -85,6 +84,7 @@ function runMigrations(sqlite: Database.Database): void {
       actual_cost REAL NOT NULL,
       outcome TEXT NOT NULL,
       identity_id TEXT NOT NULL,
+      project_type TEXT NOT NULL DEFAULT 'software',
       route_id TEXT,
       phase_id TEXT,
       synced INTEGER NOT NULL DEFAULT 0,

@@ -32,7 +32,7 @@ function meshUrl(): string {
 program
   .command("install")
   .description("Detect MCP clients and install OpenPlan")
-  .action(() => {
+  .action(async () => {
     const openplanEntry = { command: "npx", args: ["-y", "@openplan/mcp"] };
     const openplanLocal = { type: "local", command: ["npx", "-y", "@openplan/mcp"], enabled: true };
 
@@ -61,6 +61,20 @@ program
     if (hasOpencode) detected.push("OpenCode");
     if (hasClaude) detected.push("Claude Desktop");
     console.error(`  ${pc.dim(">")} Detected: ${detected.join(", ")}`);
+
+    // Ask for consent before writing configs (skip in CI)
+    if (process.stdout.isTTY && !process.env.CI) {
+      const { createInterface } = await import("node:readline");
+      const rl = createInterface({ input: process.stdin, output: process.stderr });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(`  ${pc.dim(">")} Install in ${detected.join(" and ")}? [Y/n] `, resolve);
+      });
+      rl.close();
+      if (answer.trim().toLowerCase() === "n") {
+        console.error(`  ${pc.yellow(">")} Installation cancelled.\n`);
+        process.exit(0);
+      }
+    }
 
     for (const client of detected) {
       if (client === "OpenCode") {

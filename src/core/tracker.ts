@@ -76,6 +76,7 @@ export function checkpoint(input: CheckpointInput): CheckpointResult | RouteStat
       actualCost: newActual,
       outcome: "completed",
       identityId,
+      projectType: route.project,
       routeId: resolved,
       phaseId: matchedPhase.id,
     });

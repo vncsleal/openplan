@@ -127,11 +127,16 @@ export function review(input: ReviewInput): ReviewResult | StructuredError {
   const hazardPrecision = hazardCount > 0 ? highVarianceCount / hazardCount : null;
   const hazardRecall = completedPhases.length > 0 ? highVarianceCount / completedPhases.length : null;
 
+  const replanTiming = archivedCount > 0 ? archivedCount / Math.max(totalRouteCount, 1) : null;
+
   const selfDiagnostics = {
     totalRoutes: totalRouteCount,
     archivedRoutes: archivedCount,
     archiveRate: archiveRate !== null ? Number(archiveRate.toFixed(3)) : null,
     phaseAbandonRate: phaseAbandonRate !== null ? Number(phaseAbandonRate.toFixed(3)) : null,
+    replanTiming: replanTiming !== null ? Number(replanTiming.toFixed(3)) : null,
+    mergeRate: null,
+    reorderRate: null,
     skipRate: skipRate !== null ? Number(skipRate.toFixed(3)) : null,
     hazardPrecision: hazardPrecision !== null ? Number(hazardPrecision.toFixed(3)) : null,
     hazardRecall: hazardRecall !== null ? Number(hazardRecall.toFixed(3)) : null,

@@ -9,10 +9,7 @@ import httpx
 
 from .db import get_key_usage
 
-RATE_LIMITS: dict[str, int] = {
-    "free": 100,
-    "pro": 999999,
-}
+PULL_DAILY_LIMIT = 100
 
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "openplan-cli")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
@@ -26,10 +23,6 @@ def get_tier_from_api_key(conn: Any, api_key: str) -> str:
         (api_key,),
     ).fetchone()
     return row["tier"] if row else ""
-
-
-def get_rate_limit_for_tier(tier: str) -> int:
-    return RATE_LIMITS.get(tier, 100)
 
 
 def generate_api_key(

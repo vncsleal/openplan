@@ -50,6 +50,7 @@ export const calibrationEvents = sqliteTable("calibration_events", {
   actualCost: real("actual_cost").notNull(),
   outcome: text("outcome").$type<OutcomeType>().notNull(),
   identityId: text("identity_id").notNull(),
+  projectType: text("project_type").notNull().default("software"),
   routeId: text("route_id"),
   phaseId: text("phase_id"),
   synced: integer("synced").notNull().default(0),

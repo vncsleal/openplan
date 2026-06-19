@@ -16,7 +16,6 @@ v1 = APIRouter(prefix="/v1")
 
 from .auth import (
     get_tier_from_api_key,
-    get_rate_limit_for_tier,
     generate_api_key,
     revoke_api_key,
     get_user_by_github_id,
@@ -70,16 +69,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(v1)
-
-
-def _get_tier(request: Request) -> str:
-    api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not api_key:
-        api_key = request.query_params.get("api_key", "")
-    tier = get_tier_from_api_key(conn, api_key)
-    if not tier and os.environ.get("OPENPLAN_REQUIRE_API_KEY"):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
-    return tier or "free"
 
 
 # ─── Health ──────────────────────────────────────────────────────────────────

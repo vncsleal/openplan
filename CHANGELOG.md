@@ -2,7 +2,13 @@
 
 ## 0.1.13 — 2026-06-19
 
-- **Chore:** Version now reads from package.json dynamically — no more hardcoded versions
+- **Chore:** Version reads from package.json dynamically — no more hardcoded versions
+- **Fix:** WAL pragma removed from in-memory databases
+- **Fix:** Removed dead RATE_LIMITS dict and unused `_get_tier` function
+- **Fix:** Self-diagnostics now reports `replanTiming`, `mergeRate`, `reorderRate`
+- **Fix:** `project_type` no longer hardcoded to "software" — sent dynamically from route project name
+- **Feat:** `openplan install` now asks for consent before writing configs
+- **Feat:** Archive-based hazard detection in `review()`
 
 ## 0.1.12 — 2026-06-19
 

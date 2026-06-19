@@ -55,6 +55,7 @@ export interface CalibrationEvent {
   actualCost: number;
   outcome: "completed" | "abandoned" | "modified";
   identityId: string;
+  projectType: string;
   routeId: string | null;
   phaseId: string | null;
   synced: number;
@@ -68,6 +69,7 @@ export interface NewCalibrationEvent {
   actualCost: number;
   outcome: CalibrationEvent["outcome"];
   identityId: string;
+  projectType: string;
   routeId: string | null;
   phaseId: string | null;
 }
@@ -222,6 +224,9 @@ export interface SelfDiagnostics {
   archivedRoutes: number;
   archiveRate: number | null;
   phaseAbandonRate: number | null;
+  replanTiming: number | null;
+  mergeRate: number | null;
+  reorderRate: number | null;
   skipRate: number | null;
   hazardPrecision: number | null;
   hazardRecall: number | null;
