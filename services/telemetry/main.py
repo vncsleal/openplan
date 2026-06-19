@@ -450,10 +450,16 @@ async def export_data(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Missing API key")
 
     key_row = conn.execute(
-        "SELECT user_id, tier FROM api_keys WHERE key = ?", (auth,)
+        "SELECT user_id, tier FROM api_keys WHERE key = ? AND is_active = 1", (auth,)
     ).fetchone()
     if not key_row:
         raise HTTPException(status_code=404, detail="API key not found")
+
+    if key_row["tier"] != "pro":
+        raise HTTPException(
+            status_code=402,
+            detail="Export requires Pro subscription. Upgrade at openplan.cc.",
+        )
 
     # Export all calibration events for this API key
     rows = conn.execute(

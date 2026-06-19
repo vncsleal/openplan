@@ -611,7 +611,9 @@ program
         headers: { Authorization: `Bearer ${config.apiKey}` },
       });
       if (!resp.ok) {
-        console.error(`  ${pc.red("!")} Export failed (${resp.status})\n`);
+        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+        const detail = err?.detail as string ?? `HTTP ${resp.status}`;
+        console.error(`  ${pc.red("!")} Export failed: ${detail}\n`);
         return;
       }
       const data = (await resp.json()) as Record<string, unknown>;

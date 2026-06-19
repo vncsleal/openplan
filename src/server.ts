@@ -291,7 +291,23 @@ export async function startServer(): Promise<void> {
     const { uri } = request.params;
 
     if (uri === "openplan://profiles") {
-      const resource = getProfilesResource(store);
+      // Check Pro tier for personal bias display
+      let isPro = false;
+      if (config.apiKey) {
+        try {
+          const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+            signal: AbortSignal.timeout(3000),
+          });
+          if (acctResp.ok) {
+            const acct = (await acctResp.json()) as Record<string, unknown>;
+            isPro = acct.tier === "pro";
+          }
+        } catch {
+          // assume Free
+        }
+      }
+      const resource = getProfilesResource(store, isPro);
       return { contents: [resource] };
     }
 
