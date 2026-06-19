@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16 — 2026-06-19
+
+- **Docs:** Update tool descriptions to mention personal bias, archived routes, mesh sync status
+- **Docs:** Consolidate global AGENTS.md — remove duplicates, correct tool names, remove version numbers
+- **Docs:** Update SKILL.md personal bias description (Bayesian shrinkage)
+
 ## 0.1.15 — 2026-06-19
 
 - **Feat:** FastMCP framework replaces raw MCP SDK — Zod schemas, automatic validation, dev tooling
