@@ -236,8 +236,6 @@ export interface MeshSyncStatus {
 export type ErrorCode =
   | "INVALID_ARGUMENT"
   | "NOT_FOUND"
-  | "NOT_INITIALIZED"
-  | "CONFLICT"
   | "INTERNAL"
   | "MESH_UNREACHABLE";
 
@@ -246,6 +244,6 @@ export interface StructuredError {
     code: ErrorCode;
     message: string;
     param?: string;
-    retryAfter?: number;
+    retry_after?: number;
   };
 }

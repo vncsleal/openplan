@@ -100,18 +100,9 @@ async def health() -> HealthResponse:
 
 @v1.post("/checkpoints")
 async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, Any]:
-    tier = _get_tier(request)
     api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
     if not api_key:
         api_key = request.query_params.get("api_key", "")
-
-    limit = get_rate_limit_for_tier(tier)
-    current = get_rate_limit(conn, api_key or "anonymous")
-    if current >= limit:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded ({limit}/min for {tier} tier). Upgrade at openplan.cc",
-        )
 
     accepted = 0
     rejected: list[dict[str, Any]] = []
@@ -132,7 +123,6 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
             )
             continue
         insert_event(conn, api_key, ev.model_dump())
-        increment_rate_limit(conn, api_key or "anonymous")
         accepted += 1
 
     conn.commit()
@@ -142,8 +132,24 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
     return result
 
 
+DEFAULT_DAILY_LIMIT = 100
+
+
 @v1.get("/baselines", response_model=CalibrationResponse)
-async def calibration() -> CalibrationResponse:
+async def calibration(request: Request) -> CalibrationResponse:
+    api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if api_key:
+        tier = get_tier_from_api_key(conn, api_key)
+    else:
+        tier = ""
+    if tier != "pro":
+        current = get_rate_limit(conn, api_key or "anonymous", window_seconds=86400)
+        if current >= DEFAULT_DAILY_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Daily baseline limit reached (100/day). Upgrade to Pro for unlimited.",
+            )
+        increment_rate_limit(conn, api_key or "anonymous", window_seconds=86400)
     baselines = get_calibration(conn)
     return CalibrationResponse(baselines=[Baseline(**b) for b in baselines])
 
@@ -322,7 +328,6 @@ async def create_checkout(request: Request) -> dict[str, str]:
 
     price_ids = {
         "pro": os.environ.get("STRIPE_PRO_PRICE_ID", ""),
-        "enterprise": os.environ.get("STRIPE_ENTERPRISE_PRICE_ID", ""),
     }
     price_id = price_ids.get(plan)
     if not price_id:

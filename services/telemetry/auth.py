@@ -11,8 +11,7 @@ from .db import get_key_usage
 
 RATE_LIMITS: dict[str, int] = {
     "free": 100,
-    "pro": 1000,
-    "enterprise": 10000,
+    "pro": 999999,
 }
 
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "openplan-cli")
@@ -33,7 +32,9 @@ def get_rate_limit_for_tier(tier: str) -> int:
     return RATE_LIMITS.get(tier, 100)
 
 
-def generate_api_key(conn: Any, user_id: str = "", tier: str = "free", label: str = "") -> str:
+def generate_api_key(
+    conn: Any, user_id: str = "", tier: str = "free", label: str = ""
+) -> str:
     key = f"op_{secrets.token_hex(24)}"
     conn.execute(
         "INSERT OR IGNORE INTO api_keys (key, user_id, tier, label, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)",
@@ -50,11 +51,15 @@ def revoke_api_key(conn: Any, api_key: str) -> bool:
 
 
 def get_user_by_github_id(conn: Any, github_id: int) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM users WHERE github_id = ?", (github_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM users WHERE github_id = ?", (github_id,)
+    ).fetchone()
     return dict(row) if row else None
 
 
-def create_user(conn: Any, github_id: int, login: str, email: str, avatar_url: str) -> str:
+def create_user(
+    conn: Any, github_id: int, login: str, email: str, avatar_url: str
+) -> str:
     user_id = f"u_{secrets.token_hex(12)}"
     conn.execute(
         "INSERT OR IGNORE INTO users (id, github_id, login, email, avatar_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -64,7 +69,9 @@ def create_user(conn: Any, github_id: int, login: str, email: str, avatar_url: s
     return user_id
 
 
-def create_oauth_session(conn: Any, device_code: str, user_code: str, expires_in: int = 600) -> None:
+def create_oauth_session(
+    conn: Any, device_code: str, user_code: str, expires_in: int = 600
+) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO oauth_sessions (device_code, user_code, state, created_at, expires_at) VALUES (?, ?, 'pending', ?, ?)",
         (device_code, user_code, time.time(), time.time() + expires_in),
@@ -74,12 +81,19 @@ def create_oauth_session(conn: Any, device_code: str, user_code: str, expires_in
 
 def poll_oauth_session(conn: Any, device_code: str) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT * FROM oauth_sessions WHERE device_code = ?", (device_code,),
+        "SELECT * FROM oauth_sessions WHERE device_code = ?",
+        (device_code,),
     ).fetchone()
     return dict(row) if row else None
 
 
-def complete_oauth_session(conn: Any, device_code: str, github_token: str, access_token: str, refresh_token: str) -> None:
+def complete_oauth_session(
+    conn: Any,
+    device_code: str,
+    github_token: str,
+    access_token: str,
+    refresh_token: str,
+) -> None:
     conn.execute(
         "UPDATE oauth_sessions SET state = 'completed', github_token = ?, access_token = ?, refresh_token = ? WHERE device_code = ?",
         (github_token, access_token, refresh_token, device_code),
@@ -121,7 +135,10 @@ async def get_github_user(access_token: str) -> dict[str, Any]:
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             "https://api.github.com/user",
-            headers={"Authorization": f"Bearer {access_token}", "User-Agent": "openplan"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "User-Agent": "openplan",
+            },
             timeout=10,
         )
         resp.raise_for_status()
@@ -136,10 +153,19 @@ def get_subscription(conn: Any, user_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def create_subscription(conn: Any, stripe_sub_id: str, user_id: str, stripe_customer_id: str, tier: str) -> None:
+def create_subscription(
+    conn: Any, stripe_sub_id: str, user_id: str, stripe_customer_id: str, tier: str
+) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO subscriptions (stripe_subscription_id, user_id, stripe_customer_id, tier, status, current_period_end, created_at) VALUES (?, ?, ?, ?, 'active', ?, ?)",
-        (stripe_sub_id, user_id, stripe_customer_id, tier, time.time() + 30 * 86400, time.time()),
+        (
+            stripe_sub_id,
+            user_id,
+            stripe_customer_id,
+            tier,
+            time.time() + 30 * 86400,
+            time.time(),
+        ),
     )
     conn.commit()
 
@@ -150,6 +176,3 @@ def cancel_subscription(conn: Any, stripe_sub_id: str) -> None:
         (stripe_sub_id,),
     )
     conn.commit()
-
-
-

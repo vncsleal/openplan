@@ -328,3 +328,174 @@ The Mesh API (FastAPI, Turso, Stripe, GitHub OAuth) is a web service, not an MCP
 - `openplan://sync-status` resource: mesh reachable, pending checkpoints, buffer usage, version
 - `review()` self_diagnostics: route create/archive ratio, phase-abandon rate, re-plan timing, skip/merge/reorder rates, hazard precision/recall
 - Liveness via MCP protocol ping (this is a stdio server, not a web service)
+
+---
+
+## Pool Poisoning Guard
+
+**When needed:** When OpenPlan has 50+ active agent identities, not before. Currently 1 user (vinicius), ~5 projects. Document now, implement later.
+
+### Defense layers (in order)
+
+1. **MAD filter** — Median Absolute Deviation with scaling factor 1.4826.
+   \[
+   z_i^{robust} = \frac{x_i - median(x)}{1.4826 \cdot MAD}
+   \]
+   Reject calibrations where \(|z| > 3\). MAD has 50% breakdown point: an attacker needs to control half the pool to shift the estimate.
+
+   Implementation requirement: need at least 20 samples to compute MAD reliably. Below that, skip filter and fall through to minimum sample threshold.
+
+2. **Minimum sample threshold** — Don't build baselines with fewer than 20 calibration events per (action, project_type) bucket. Below 20, use Bayesian shrinkage toward the project_type prior:
+   \[
+   estimate = \frac{n \cdot \bar{x} + \kappa \cdot prior}{n + \kappa}
+   \]
+   where \(\kappa = 10\) (strength of prior) and \(prior\) is the global median for that action across all project_types.
+
+3. **Per-key rate limiting** — Track calibration volume per `identityId`. If one identity produces >30% of calibrations in a sliding 24h window, quarantine that key: its calibrations still count but with 0.5 weight.
+
+4. **Consistency check** — Phase calibrations must satisfy:
+   - `actual_cost > 0` (obvious, but enforce)
+   - `|expected_cost - actual_cost| / expected_cost < 10` (10x deviation is suspicious; flag for review rather than reject outright)
+   - Outcome must be one of the known enum values
+
+### References
+
+- **Huber & Ronchetti, *Robust Statistics*** — MAD is the gold standard since the 1980s.
+- **Gelman et al., *Bayesian Data Analysis*** — Chapter on hierarchical modeling (Bayesian shrinkage).
+- **GitHub's abuse detection** — Rate limiting + behavioral scoring; they use MAD on latencies to detect API abuse.
+- **Wikipedia, *Median absolute deviation*** — \(\hat{\sigma} = 1.4826 \cdot MAD\) for normal-like data.
+
+### Non-goals
+
+- No ML model for poisoning detection (overkill for current scale).
+- No cryptographic commitments or on-chain verification.
+- No per-identity reputation scores (introduces gameability without enough users to validate).
+
+---
+
+## Infinity Types (Why Keywords)
+
+The current approach of `goal_tokens` and `labelTokens` as space-joined token strings is the correct design. Rationale:
+
+- An enum of allowed labels would grow unbounded — agents invent new phase descriptions on every project.
+- A union type in TypeScript would require schema changes and redeploys for every new token.
+- Free-form token strings with `LIKE` matching avoid schema drift entirely.
+
+The matching pipeline is already correct:
+1. `tokenize()` — lowercases, strips punctuation and stop words, limits to 50 tokens
+2. `matchLevel()` — token overlap counting with thresholds (>=2 exact, >=1 label_keyword, fallback to action)
+
+### Why not TF-IDF
+
+TF-IDF is designed for document retrieval where you have long texts and need to rank by relevance. Our tokens are short (10-50 tokens, not thousands) and the matching needs to be fast and deterministic for an MCP server.
+
+Scenarios where TF-IDF would help:
+- Synonym resolution: "stripe" vs "stripe-integration" vs "payment-gateway" — these don't overlap but mean the same thing. TF-IDF wouldn't solve this either (different surface tokens). This is a fuzzy matching problem, not a weighting problem.
+- Rare token boost: a term like "webhook" appearing in only 1/100 phases gets higher IDF weight. But since our match is threshold-based (>=2 tokens), not ranking-based, IDF doesn't change the outcome.
+
+If synonym resolution becomes a real problem, the solution is token normalization, not TF-IDF:
+- Stemming: "deploying" → "deploy", "deployed" → "deploy"
+- Alias map: add aliases at tokenize time, e.g. `tokenAliases: { "stripe-integration": "stripe", "payment-gateway": "stripe" }`
+- This is a future concern. Current match levels are already generous enough to handle common variants.
+
+---
+
+## Estimation Algorithm Decision
+
+### Current approach
+
+Mediana por (matchLevel, action) — tiered lookup:
+1. `exact` (>=2 token overlap, n >= 5) → use that bucket
+2. `label_keyword` (>=1 token overlap) → next best
+3. `action` (any calibration for that action) → fallback
+
+### Why not agent-estimate (PyPI)
+
+`agent-estimate` does M-estimation with Huber loss — robust regression for multivariate estimation. It's the right tool when:
+- You have continuous features (not discrete buckets)
+- You want a parametric model (not a lookup table)
+- You have hundreds of features and thousands of samples
+
+OpenPlan's estimation problem is univariate per segment: find the expected cost for (exact tokens, action) bucket. A continuous model would add complexity without benefit because:
+- Our features are categorical (action, match level), not continuous
+- Sample counts per bucket are small (tens, not thousands)
+- A linear model with categorical features would produce the same per-group means
+
+### When to revisit
+
+If OpenPlan grows to:
+- >1000 calibration events per identity
+- Need to estimate cost from multiple continuous dimensions (e.g., code complexity score, commit count, file count)
+- Want to predict cost before the first calibration event for a new project type
+
+At that point, agent-estimate or a small Bayesian regression model becomes worth it. Not now.
+
+---
+
+## Pricing Model
+
+### Core principle
+
+- **MCP server is MIT.** Free forever, zero gating. No code is locked.
+- **Value is in the Mesh, not the server.** The Mesh is a hosted service — that's what people pay for.
+- **Push is ilimitado para todos.** Every calibration enriches the pool. Gating push weakens the product for everyone, including paying users.
+- **Pull is what costs money.** Receiving baselines consumes infra (compute, storage, bandwidth).
+
+### Free
+
+- MCP server local (MIT) — 100% functionality, no restrictions
+- Push checkpoints to Mesh: ilimitado
+- Pull baselines from Mesh: rate limited (100 pulls/day)
+  - Applies only to Mesh sync, not local cache
+  - If limit is hit, server uses cached baselines and retries next window
+  - Agent never sees an error: degraded sync, not degraded tools
+- Baselines received: **pool only** (global median aggregated from all identities)
+- Export: no
+- CLI: complete
+
+### Pro
+
+- Everything in Free
+- Pull baselines from Mesh: ilimitado
+- **Personal baselines** — Bayesian shrinkage (partial pooling) that blends personal calibration history with pool prior:
+
+  ```
+  personal_estimate = (n · personal_median + κ · pool_median) / (n + κ)
+  ```
+
+  - `n` = calibrations from your identity in the (action, matchLevel) bucket
+  - `pool_median` = global median from the Mesh
+  - `κ` = prior strength (~10, adjustable)
+  - With 0 calibrations: estimate = pool
+  - With 10 calibrations: 50% personal / 50% pool
+  - With 100 calibrations: ~90% personal
+  - **Guarantee**: personal baseline is never worse than pool baseline. With few data points it converges to pool (safe). With enough data it converges to personal signal. Bayesian shrinkage is a provable improvement over either extreme.
+
+- **Export**: CSV / JSON / Markdown of your complete history (routes, phases, deviations, accuracy by action)
+- **Priority queue**: Mesh processes Pro pulls before Free pulls
+
+### Rate limit details
+
+- Window: sliding 24h, counted server-side per identity_id
+- Push: no limit (enviar é contribuir)
+- Pull: 100/day Free, ilimitado Pro
+- Cache: baselines are cached locally in SQLite and refreshed in background (5min interval). Rate limit affects cache refresh, not MCP tool responses.
+
+### Identity
+
+- **Anonymous** (no auth, no Mesh account): server works fully offline. No Mesh sync. Local-only baselines from your own calibrations. This is the "offline mode" — functional but isolated.
+- **Free** (identity_id + api_key): Mesh sync enabled. Pool baselines. Rate limited pull.
+- **Pro** (GitHub OAuth linked): Mesh sync enabled. Everything above.
+
+### Future considerations
+
+- Team plans (shared personal baselines across team identities)
+- Self-hosted Mesh enterprise (private pool, no data leaves the org)
+- Custom probes, deviation alerts, dashboards (requires GUI — not in scope for v0.x)
+
+### Non-goals
+
+- No gating of MCP server features. The server is MIT.
+- No billing per checkpoint or per agent session. Flat tiers only.
+- No per-API-key metering. Identity-level limits only.
+- No ads, no data selling.

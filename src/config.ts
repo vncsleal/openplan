@@ -70,11 +70,13 @@ export function loadConfig(): OpenPlanConfig {
   const meshSection = config.mesh as Record<string, unknown> | undefined;
   const costProbeSection = config.cost_probe as Record<string, unknown> | undefined;
 
+  const disableMesh = process.env.OPENPLAN_DISABLE_MESH === "true" || (meshSection?.enabled === false);
+
   return {
     identityId,
     projectRoot: process.env.OPENPLAN_PROJECT_ROOT ?? process.cwd(),
     dataDir: getDataDir(),
-    meshUrl: process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? null,
+    meshUrl: disableMesh ? null : (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc"),
     apiKey: process.env.OPENPLAN_API_KEY ?? (meshSection?.api_key as string | undefined) ?? null,
     costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? (costProbeSection?.command as string | undefined) ?? null,
   };
