@@ -1,6 +1,6 @@
 {
   "name": "@openplan/mcp",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Waze for AI agents — plan, track, and learn from software projects.",
   "license": "MIT",
   "type": "module",
