@@ -1,7 +1,8 @@
 import type { DataStore } from "./ports.js";
-import type { PlanPhase, PlanResult, ArchivedRoute } from "./domain.js";
+import type { PlanPhase, PlanResult, ArchivedRoute, StructuredError } from "./domain.js";
 import { tokenize, matchLevel } from "./tokenizer.js";
 import { ciFromBaseline, personalBias } from "./costs.js";
+
 export interface PlanInput {
   goal: string;
   context?: string;
@@ -38,6 +39,24 @@ function estimateAction(action: string): number {
     migrate: 800,
   };
   return weights[action] ?? 400;
+}
+
+function actionEfficiencyFromSequences(sequences: { actionSequence: string; efficiency: number }[]): Map<string, number> {
+  const byAction = new Map<string, number[]>();
+  for (const seq of sequences) {
+    const actions = seq.actionSequence.split(",");
+    for (const action of actions) {
+      const existing = byAction.get(action) ?? [];
+      existing.push(seq.efficiency);
+      byAction.set(action, existing);
+    }
+  }
+  const result = new Map<string, number>();
+  for (const [action, effs] of byAction) {
+    const avg = effs.reduce((a, b) => a + b, 0) / effs.length;
+    result.set(action, avg);
+  }
+  return result;
 }
 
 function decompose(goal: string, context?: string): { label: string; action: string }[] {
@@ -103,7 +122,7 @@ function decompose(goal: string, context?: string): { label: string; action: str
   });
 }
 
-export function plan(input: PlanInput): PlanResult {
+export function plan(input: PlanInput): PlanResult | StructuredError {
   const { goal, replan, project, identityId, store } = input;
 
   if (replan) {
@@ -112,10 +131,18 @@ export function plan(input: PlanInput): PlanResult {
       store.archiveRoute(existing.id);
     }
   } else {
+    // Idempotent: same goal + same project = return existing route
     const existing = store.getRouteByProjectAndGoal(project, goal);
     if (existing) {
       const phases = store.getPhases(existing.id);
       return buildPlanResult(existing, phases, store, identityId, project);
+    }
+    // Conflict: different goal for same project
+    const active = store.getActiveRoute(project);
+    if (active) {
+      return {
+        error: { code: "CONFLICT", message: `Project "${project}" already has an active route with a different goal: "${active.goal}". Use replan=true to archive it.`, param: "project" },
+      };
     }
   }
 
@@ -132,6 +159,8 @@ export function plan(input: PlanInput): PlanResult {
 
     const baselines = store.getBaselines();
     const bias = personalBias(store.getCalibrationEvents());
+    const sequences = store.getSequences();
+    const actionEff = actionEfficiencyFromSequences(sequences);
 
     let totalExpected = 0;
 
@@ -139,7 +168,14 @@ export function plan(input: PlanInput): PlanResult {
       const labelTokens = tokenize(p.label);
       const cost = estimateAction(p.action);
       const costInfo = ciFromBaseline(baselines, goalTokens, labelTokens, p.action);
-      const expectedCost = costInfo?.expected ?? cost;
+      let expectedCost = costInfo?.expected ?? cost;
+
+      // Path learning: adjust estimate by historical efficiency for this action
+      const eff = actionEff.get(p.action);
+      if (eff !== undefined && eff > 0) {
+        expectedCost = Math.round(expectedCost / eff);
+      }
+
       const adjustedCost = bias !== null ? Math.round(expectedCost * bias) : expectedCost;
 
       totalExpected += adjustedCost;

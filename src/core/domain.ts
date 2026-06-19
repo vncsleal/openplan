@@ -236,6 +236,8 @@ export interface MeshSyncStatus {
 export type ErrorCode =
   | "INVALID_ARGUMENT"
   | "NOT_FOUND"
+  | "NOT_INITIALIZED"
+  | "CONFLICT"
   | "INTERNAL"
   | "MESH_UNREACHABLE";
 

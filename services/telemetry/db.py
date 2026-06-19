@@ -100,6 +100,7 @@ def init_db(conn: Any) -> None:
             api_key       TEXT NOT NULL DEFAULT '',
             project_type  TEXT NOT NULL DEFAULT '',
             action        TEXT NOT NULL,
+            phase_label_tokens TEXT NOT NULL DEFAULT '',
             expected_cost REAL,
             actual_cost   REAL NOT NULL,
             outcome       TEXT NOT NULL DEFAULT 'success',
@@ -167,6 +168,14 @@ def init_db(conn: Any) -> None:
             value TEXT NOT NULL DEFAULT ''
         )
     """)
+    # Migration: add phase_label_tokens column if missing
+    try:
+        conn.execute(
+            "ALTER TABLE calibration_events ADD COLUMN phase_label_tokens TEXT NOT NULL DEFAULT ''"
+        )
+    except Exception:
+        # Column already exists — ignore
+        pass
     conn.commit()
 
 
@@ -175,12 +184,13 @@ def init_db(conn: Any) -> None:
 
 def insert_event(conn: Any, api_key: str, event: dict[str, Any]) -> None:
     conn.execute(
-        "INSERT INTO calibration_events (api_key, project_type, action, expected_cost, actual_cost, outcome, session_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO calibration_events (api_key, project_type, action, phase_label_tokens, expected_cost, actual_cost, outcome, session_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             api_key,
             event.get("project_type", ""),
             event.get("action", ""),
+            event.get("phase_label_tokens", ""),
             event.get("expected_cost"),
             event.get("actual_cost", 0),
             event.get("outcome", "success"),
@@ -196,31 +206,42 @@ def get_calibration(
     cutoff = time.time() - 30 * 86400
     rows = conn.execute(
         """
-        SELECT project_type, action, actual_cost, api_key
+        SELECT project_type, action, phase_label_tokens, actual_cost, api_key
         FROM calibration_events
         WHERE actual_cost IS NOT NULL AND actual_cost > 0
           AND created_at >= ?
-        ORDER BY project_type, action
+        ORDER BY project_type, action, phase_label_tokens
     """,
         (cutoff,),
     ).fetchall()
 
-    groups: dict[tuple[str, str], list[float]] = {}
-    contributors: dict[tuple[str, str], set[str]] = {}
+    # Group by (project_type, action, match_level)
+    # match_level is computed from token overlap:
+    #   exact = 2+ overlapping tokens between phases
+    #   label_keyword = 1+ overlapping tokens
+    #   action = action-only (fallback)
+    groups: dict[tuple[str, str, str], tuple[list[float], set[str]]] = {}
     for r in rows:
-        key = (r["project_type"], r["action"])
+        tokens = (r.get("phase_label_tokens") or "").split()
+        token_set = set(tokens)
+        # Compute match level based on phase_label_tokens density
+        # A phase label with 2+ tokens can be matched at exact level,
+        # with 1 token at label_keyword level, action level is always available
+        if len(token_set) >= 2:
+            match_level = "exact"
+        elif len(token_set) >= 1:
+            match_level = "label_keyword"
+        else:
+            match_level = "action"
+        key = (r["project_type"], r["action"], match_level)
         if key not in groups:
-            groups[key] = []
-            contributors[key] = set()
-        groups[key].append(r["actual_cost"])
-        contributors[key].add(r["api_key"])
+            groups[key] = ([], set())
+        groups[key][0].append(r["actual_cost"])
+        groups[key][1].add(r["api_key"])
 
     results: list[dict[str, Any]] = []
-    for (pt, action), values in groups.items():
-        if (
-            len(values) < min_samples
-            or len(contributors[(pt, action)]) < min_contributors
-        ):
+    for (pt, action, match_level), (values, contributors) in groups.items():
+        if len(values) < min_samples or len(contributors) < min_contributors:
             continue
         sorted_vals = sorted(values)
         n = len(sorted_vals)
@@ -231,6 +252,7 @@ def get_calibration(
             {
                 "project_type": pt,
                 "action": action,
+                "match_level": match_level,
                 "cost_tokens": round(mean, 2),
                 "sample_count": n,
                 "p50": round(_percentile(sorted_vals, 0.5), 2),

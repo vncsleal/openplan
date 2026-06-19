@@ -17,6 +17,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
       try {
         const batch = events.map((e) => ({
           action: e.action,
+          phase_label_tokens: e.phaseLabelTokens,
           expected_cost: e.expectedCost,
           actual_cost: e.actualCost,
           outcome: outcomeToMesh(e.outcome),
@@ -56,12 +57,11 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         if (!res.ok) return [];
 
         const body = (await res.json()) as Record<string, unknown>;
-        // Python API returns { baselines: [...] } or directly an array
         const rawBaselines = (Array.isArray(body) ? body : (body.baselines as Record<string, unknown>[])) ?? [];
 
         return rawBaselines.map((b: Record<string, unknown>) => ({
           id: crypto.randomUUID(),
-          matchLevel: "action" as const,
+          matchLevel: (b.match_level as CostBaseline["matchLevel"]) ?? "action",
           action: (b.action as string) ?? "",
           avgCost: (b.cost_tokens ?? b.p50 ?? 0) as number,
           ciLo: (b.p25 ?? null) as number | null,

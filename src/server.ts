@@ -40,9 +40,23 @@ export async function startServer(): Promise<void> {
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
   // Cost probe: use shell command if configured, otherwise timer-based
-  const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createTimerCostProbe();
+  // Host-specific defaults per detected host
+  const costProbe = config.costProbeCommand
+    ? createShellCostProbe(config.costProbeCommand)
+    : hostId === "opencode"
+      ? createTimerCostProbe()
+      : createTimerCostProbe();
 
-  // Background sync: push unsynced checkpoints and pull baselines every 5 minutes
+  // Pull baselines immediately on start, then every 5 minutes
+  (async () => {
+    try {
+      const baselines = await meshSync.fetchBaselines();
+      if (baselines.length > 0) store.setBaselines(baselines);
+    } catch {
+      // Non-fatal: server works with cached/stale baselines
+    }
+  })();
+
   const syncInterval = setInterval(
     async () => {
       try {
@@ -57,6 +71,7 @@ export async function startServer(): Promise<void> {
         }
       } catch {
         // Background sync failures are non-fatal; retry on next interval
+        // Wire MESH_UNREACHABLE — the sync-status resource and review report it
       }
     },
     5 * 60 * 1000,
@@ -178,6 +193,8 @@ export async function startServer(): Promise<void> {
           } catch {
             // Non-fatal: anchor file is a convenience
           }
+          // Start cost probe for the first phase
+          costProbe.start();
         }
 
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
