@@ -351,9 +351,33 @@ program
 program
   .command("account")
   .description("Account info and subscription status")
-  .action(async () => {
+  .argument("[action]", "Action: delete")
+  .action(async (action?: string) => {
     const config = loadConfig();
     const base = meshUrl();
+
+    // Account deletion
+    if (action === "delete") {
+      if (!config.apiKey) {
+        console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
+        return;
+      }
+      console.error(`  ${pc.yellow("!")} This will delete all your calibration data from the Mesh and revoke your API key.`);
+      try {
+        const resp = await fetch(`${base}/v1/account/delete`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${config.apiKey}` },
+        });
+        if (!resp.ok) {
+          console.error(`  ${pc.red("!")} Delete failed (${resp.status})\n`);
+          return;
+        }
+        console.error(`  ${pc.green("*")} Account data deleted from Mesh.\n`);
+      } catch (e) {
+        console.error(`  ${pc.red("!")} Delete failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      }
+      return;
+    }
 
     let subStatus: Record<string, unknown> | null = null;
     if (config.apiKey) {

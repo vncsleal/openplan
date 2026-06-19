@@ -428,6 +428,21 @@ async def subscription_status(request: Request) -> dict[str, Any]:
     return {"status": "none", "tier": "free"}
 
 
+@v1.post("/account/delete")
+async def delete_account(request: Request) -> dict[str, bool]:
+    auth = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    # Delete all calibration events for this API key
+    conn.execute("DELETE FROM calibration_events WHERE api_key = ?", (auth,))
+    # Revoke the API key
+    revoke_api_key(conn, auth)
+    conn.commit()
+    _log.info("Account deleted for key %s", auth[:8])
+    return {"ok": True}
+
+
 @v1.get("/export")
 async def export_data(request: Request) -> dict[str, Any]:
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")

@@ -47,7 +47,11 @@ def generate_api_key(
 def revoke_api_key(conn: Any, api_key: str) -> bool:
     conn.execute("UPDATE api_keys SET is_active = 0 WHERE key = ?", (api_key,))
     conn.commit()
-    return conn.execute("SELECT changes()").fetchone()[0] > 0
+    row = conn.execute("SELECT changes() AS cnt").fetchone()
+    if not row:
+        return False
+    raw = row.get("cnt") if isinstance(row, dict) else row[0]
+    return int(raw) > 0
 
 
 def get_user_by_github_id(conn: Any, github_id: int) -> dict[str, Any] | None:

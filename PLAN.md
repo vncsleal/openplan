@@ -108,7 +108,6 @@ All tools return structured JSON. Errors are never thrown as MCP exceptions. Res
 | `NOT_INITIALIZED` | Config missing |
 | `CONFLICT` | Route already exists with different goal |
 | `INTERNAL` | Unexpected failure |
-| `MESH_UNREACHABLE` | Background sync failed (ignorable) |
 
 ---
 
@@ -267,7 +266,7 @@ No args starts the MCP server (stdio). Subcommands:
 | `openplan log [route\|project]` | Checkpoint trail |
 | `openplan mesh [on\|off]` | Show or toggle Mesh sync |
 
-CLI conventions: stdout for data, stderr for messaging. `--json` on all commands. `NO_COLOR` support. picocolors for status coloring.
+CLI conventions: stdout for data, stderr for messaging. `--json` on `account`, `config`, `status`, `log`. `NO_COLOR` support. picocolors for status coloring.
 
 ---
 
@@ -293,7 +292,7 @@ The MCP server is MIT — no locked features. Value is in the Mesh: the cloud ca
 
 **Not collected:** File contents, source code, agent prompts/responses, project names (raw).
 
-**User control:** Data export and deletion via `openplan account` commands. Mesh deletes identity data within 30 days of request. Local data is never shared by the MCP server.
+**User control:** Data export via `openplan export` (JSON/CSV/Markdown, cross-machine). Data deletion via `openplan account delete`. Mesh deletes identity data within 30 days of request. Local data is never shared by the MCP server.
 
 ---
 
@@ -332,7 +331,7 @@ The Mesh API (FastAPI, Turso, Stripe, GitHub OAuth) is a web service, not an MCP
 ## Observability
 
 - `openplan://sync-status` resource: mesh reachable, pending checkpoints, buffer usage, version
-- `review()` self_diagnostics: route create/archive ratio, phase-abandon rate, re-plan timing, skip/merge/reorder rates, hazard precision/recall
+- `review()` self_diagnostics: route create/archive ratio, phase-abandon rate, hazard precision/recall
 - Liveness via MCP protocol ping (this is a stdio server, not a web service)
 
 ---

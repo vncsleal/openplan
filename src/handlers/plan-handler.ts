@@ -8,6 +8,7 @@ export interface PlanHandlerInput {
   replan?: boolean;
   project: string;
   store: DataStore;
+  isPro: boolean;
 }
 
 export function handlePlan(input: PlanHandlerInput): PlanResult | StructuredError {
@@ -18,7 +19,7 @@ export function handlePlan(input: PlanHandlerInput): PlanResult | StructuredErro
       };
     }
 
-    return plan({
+    const result = plan({
       goal: input.goal.trim(),
       context: input.context,
       replan: input.replan,
@@ -26,6 +27,13 @@ export function handlePlan(input: PlanHandlerInput): PlanResult | StructuredErro
       identityId: input.store.getIdentityId(),
       store: input.store,
     });
+
+    // Strip personal bias for Free users
+    if (!("error" in result) && !input.isPro) {
+      result.personalBias = null;
+    }
+
+    return result;
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return {

@@ -238,8 +238,7 @@ export type ErrorCode =
   | "NOT_FOUND"
   | "NOT_INITIALIZED"
   | "CONFLICT"
-  | "INTERNAL"
-  | "MESH_UNREACHABLE";
+  | "INTERNAL";
 
 export interface StructuredError {
   error: {

@@ -178,12 +178,29 @@ export async function startServer(): Promise<void> {
             ],
           };
         }
+        // Check Pro tier for personal bias — cached per session
+        let isPro = false;
+        if (config.apiKey) {
+          try {
+            const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
+              headers: { Authorization: `Bearer ${config.apiKey}` },
+              signal: AbortSignal.timeout(3000),
+            });
+            if (acctResp.ok) {
+              const acct = (await acctResp.json()) as Record<string, unknown>;
+              isPro = acct.tier === "pro";
+            }
+          } catch {
+            // Mesh unreachable — assume Free, no personal bias
+          }
+        }
         const result = handlePlan({
           goal,
           context: typeof safeArgs?.context === "string" ? safeArgs.context : undefined,
           replan: typeof safeArgs?.replan === "boolean" ? safeArgs.replan : undefined,
           project,
           store,
+          isPro,
         });
 
         if (!("error" in result)) {

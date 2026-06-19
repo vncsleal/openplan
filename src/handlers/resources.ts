@@ -23,9 +23,9 @@ export function getRouteResource(project: string, store: DataStore): RouteResour
   };
 }
 
-export function getProfilesResource(store: DataStore): RouteResource {
+export function getProfilesResource(store: DataStore, isPro: boolean = false): RouteResource {
   const events = store.getCalibrationEvents();
-  const bias = personalBias(events);
+  const bias = isPro ? personalBias(events) : null;
   const accuracy = accuracyByAction(events);
 
   const text = JSON.stringify(
