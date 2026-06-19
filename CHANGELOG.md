@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.13 — 2026-06-19
+
+- **Chore:** Version now reads from package.json dynamically — no more hardcoded versions
+
 ## 0.1.12 — 2026-06-19
 
 - **Feat:** Path learning — `plan()` reads completed sequences for action-level efficiency

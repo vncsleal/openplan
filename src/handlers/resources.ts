@@ -1,6 +1,12 @@
 import type { DataStore } from "../core/ports.js";
 import type { RouteState } from "../core/domain.js";
 import { personalBias, accuracyByAction } from "../core/costs.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8")) as { version: string };
 
 export interface RouteResource {
   uri: string;
@@ -55,7 +61,7 @@ export function getSyncStatusResource(store: DataStore, meshReachable: boolean):
       pendingCheckpoints: unsynced.length,
       syncedCheckpoints: all.length - unsynced.length,
       buffer: Math.round((unsynced.length / Math.max(all.length, 1)) * 100),
-      version: "0.1.10",
+      version: pkg.version,
     },
     null,
     2,

@@ -17,8 +17,12 @@ import { createMeshSync } from "./adapters/mesh.js";
 import { createTimerCostProbe, createShellCostProbe } from "./adapters/cost-probe.js";
 import type { MeshSync } from "./core/ports.js";
 import type { StructuredError } from "./core/domain.js";
-import { join } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
 
 export async function startServer(): Promise<void> {
   const config = loadConfig();
@@ -95,7 +99,7 @@ export async function startServer(): Promise<void> {
   const server = new Server(
     {
       name: "openplan",
-      version: "0.1.10",
+      version: pkg.version,
     },
     {
       capabilities: {
