@@ -5,6 +5,7 @@ export interface Route {
   goalTokens: string;
   status: "active" | "archived" | "completed";
   identityId: string;
+  projectType: string;
   totalExpected: number | null;
   totalActual: number | null;
   createdAt: string;
@@ -16,6 +17,7 @@ export interface NewRoute {
   goal: string;
   goalTokens: string;
   identityId: string;
+  projectType: string;
 }
 
 export type RouteStatus = Route["status"];
@@ -132,8 +134,6 @@ export interface ConfidenceInterval {
 }
 
 export interface RouteEvidence {
-  alternatives: string[];
-  clusters: string[];
   hazards: string[];
 }
 
@@ -225,8 +225,6 @@ export interface SelfDiagnostics {
   archiveRate: number | null;
   phaseAbandonRate: number | null;
   replanTiming: number | null;
-  mergeRate: number | null;
-  reorderRate: number | null;
   skipRate: number | null;
   hazardPrecision: number | null;
   hazardRecall: number | null;
@@ -239,12 +237,7 @@ export interface MeshSyncStatus {
   syncedCheckpoints: number;
 }
 
-export type ErrorCode =
-  | "INVALID_ARGUMENT"
-  | "NOT_FOUND"
-  | "NOT_INITIALIZED"
-  | "CONFLICT"
-  | "INTERNAL";
+export type ErrorCode = "INVALID_ARGUMENT" | "NOT_FOUND" | "NOT_INITIALIZED" | "CONFLICT" | "INTERNAL";
 
 export interface StructuredError {
   error: {

@@ -84,12 +84,13 @@ db/        Drizzle schema, SQLite, DataStore implementation
 
 **One rule:** Core never imports adapters or handlers. The `DataStore` port insulates core from Drizzle.
 
-## Data
+## Stack
 
+- **FastMCP** framework over `@modelcontextprotocol/sdk` — Zod schemas for automatic input validation, `npx fastmcp dev` for testing
 - **SQLite** via `better-sqlite3` — local-first, fully offline
-- 7 tables: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences, schema_version
-- Anchor file (`.openplan`) at project root for multi-session discovery
-- Optional Mesh sync to api.openplan.cc for cross-session cost learning
+- **Mesh API** (Python/FastAPI on Fly.io) — cross-session cost learning with MAD filter, Bayesian shrinkage, per-key rate limiting
+- **7 tables**: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences, schema_version
+- **Anchor file** (`.openplan`) at project root for multi-session discovery
 
 ## Development
 

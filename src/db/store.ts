@@ -1,22 +1,22 @@
-import { eq, and, desc } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { randomUUID } from "node:crypto";
-import * as schema from "./schema.js";
-import type { DataStore } from "../core/ports.js";
+import { and, desc, eq } from "drizzle-orm";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
-  Route,
-  NewRoute,
-  RoutePhase,
-  NewPhase,
   CalibrationEvent,
-  NewCalibrationEvent,
-  CorrectionEvent,
-  NewCorrectionEvent,
-  CostBaseline,
   CompletedSequence,
-  RouteState,
+  CorrectionEvent,
+  CostBaseline,
+  NewCalibrationEvent,
+  NewCorrectionEvent,
+  NewPhase,
+  NewRoute,
   PhaseStatus,
+  Route,
+  RoutePhase,
+  RouteState,
 } from "../core/domain.js";
+import type { DataStore } from "../core/ports.js";
+import * as schema from "./schema.js";
 
 export function createStore(database: BetterSQLite3Database<typeof schema>, identityId: string): DataStore {
   const db = database;
@@ -28,6 +28,7 @@ export function createStore(database: BetterSQLite3Database<typeof schema>, iden
       goalTokens: r.goalTokens,
       status: r.status,
       identityId: r.identityId,
+      projectType: r.projectType,
       totalExpected: r.totalExpected,
       totalActual: r.totalActual,
       createdAt: r.createdAt,
@@ -105,6 +106,7 @@ export function createStore(database: BetterSQLite3Database<typeof schema>, iden
           goalTokens: newRoute.goalTokens,
           status: "active",
           identityId: newRoute.identityId,
+          projectType: newRoute.projectType,
           totalExpected: null,
           totalActual: null,
           createdAt: now,

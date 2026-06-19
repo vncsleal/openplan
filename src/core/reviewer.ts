@@ -1,7 +1,7 @@
-import type { DataStore } from "./ports.js";
-import type { ReviewResult, ReviewSummary, PhaseDeviation, StructuredError } from "./domain.js";
-import { calculateDeviation, deviationLabel, accuracyByAction, efficiency } from "./costs.js";
 import { randomUUID } from "node:crypto";
+import { accuracyByAction, calculateDeviation, deviationLabel, efficiency } from "./costs.js";
+import type { PhaseDeviation, ReviewResult, ReviewSummary, StructuredError } from "./domain.js";
+import type { DataStore } from "./ports.js";
 
 export interface ReviewInput {
   routeId?: string;
@@ -115,7 +115,9 @@ export function review(input: ReviewInput): ReviewResult | StructuredError {
   const structuralHazards: string[] = [];
   for (const [label, count] of abandonCounts) {
     if (count >= 3) {
-      structuralHazards.push(`Phase "${label}" has been abandoned in ${count} projects — consider re-evaluating its approach`);
+      structuralHazards.push(
+        `Phase "${label}" has been abandoned in ${count} projects — consider re-evaluating its approach`,
+      );
     }
   }
 
@@ -135,8 +137,6 @@ export function review(input: ReviewInput): ReviewResult | StructuredError {
     archiveRate: archiveRate !== null ? Number(archiveRate.toFixed(3)) : null,
     phaseAbandonRate: phaseAbandonRate !== null ? Number(phaseAbandonRate.toFixed(3)) : null,
     replanTiming: replanTiming !== null ? Number(replanTiming.toFixed(3)) : null,
-    mergeRate: null,
-    reorderRate: null,
     skipRate: skipRate !== null ? Number(skipRate.toFixed(3)) : null,
     hazardPrecision: hazardPrecision !== null ? Number(hazardPrecision.toFixed(3)) : null,
     hazardRecall: hazardRecall !== null ? Number(hazardRecall.toFixed(3)) : null,

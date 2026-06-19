@@ -1,9 +1,9 @@
-import type { DataStore } from "../core/ports.js";
-import type { RouteState } from "../core/domain.js";
-import { personalBias, accuracyByAction } from "../core/costs.js";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { accuracyByAction, personalBias } from "../core/costs.js";
+import type { RouteState } from "../core/domain.js";
+import type { DataStore } from "../core/ports.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8")) as { version: string };
@@ -29,9 +29,10 @@ export function getRouteResource(project: string, store: DataStore): RouteResour
   };
 }
 
-export function getProfilesResource(store: DataStore, isPro: boolean = false): RouteResource {
+export function getProfilesResource(store: DataStore, isPro = false): RouteResource {
   const events = store.getCalibrationEvents();
-  const bias = isPro ? personalBias(events) : null;
+  const baselines = store.getBaselines();
+  const bias = isPro ? personalBias(events, baselines) : null;
   const accuracy = accuracyByAction(events);
 
   const text = JSON.stringify(

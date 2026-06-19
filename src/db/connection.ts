@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import * as schema from "./schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import * as schema from "./schema.js";
 
 type OpenPlanDb = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 
@@ -55,6 +55,7 @@ function runMigrations(sqlite: Database.Database): void {
       goal_tokens TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       identity_id TEXT NOT NULL,
+      project_type TEXT NOT NULL DEFAULT 'software',
       total_expected REAL,
       total_actual REAL,
       created_at TEXT NOT NULL,

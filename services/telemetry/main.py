@@ -38,6 +38,7 @@ from .db import (
     get_calibration,
     get_rate_limit,
     increment_rate_limit,
+    get_identity_volume_ratio,
 )
 from .models import TelemetryBatch, CalibrationResponse, Baseline, HealthResponse
 
@@ -93,6 +94,14 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
     if not api_key:
         api_key = request.query_params.get("api_key", "")
 
+    # Per-key rate limiting: if one identity produces >30% of calibrations
+    # in the sliding 24h window, quarantine that key with 0.5 weight
+    if api_key:
+        ratio = get_identity_volume_ratio(conn, api_key)
+        weight = 0.5 if ratio > 0.3 else 1.0
+    else:
+        weight = 1.0
+
     accepted = 0
     rejected: list[dict[str, Any]] = []
     for ev in batch.events:
@@ -111,7 +120,7 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
                 }
             )
             continue
-        insert_event(conn, api_key, ev.model_dump())
+        insert_event(conn, api_key, ev.model_dump(), weight=weight)
         accepted += 1
 
     conn.commit()

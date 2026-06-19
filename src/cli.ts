@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-process.env.NO_COLOR = process.env.NO_COLOR ?? "";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { loadConfig, saveConfig, getConfigPath, getDataDir, ensureDirectories } from "./config.js";
-import { startServer } from "./server.js";
+import pc from "picocolors";
+import { parse, stringify } from "smol-toml";
+import { ensureDirectories, getConfigPath, getDataDir, loadConfig, saveConfig } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { createStore } from "./db/store.js";
-import { join, dirname } from "node:path";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { parse, stringify } from "smol-toml";
-import pc from "picocolors";
+import { startServer } from "./server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
@@ -314,7 +313,9 @@ program
         try {
           const { execSync } = await import("node:child_process");
           execSync(`open "${url}"`, { timeout: 3000 });
-        } catch { /* fallback */ }
+        } catch {
+          /* fallback */
+        }
       } catch (e) {
         console.error(`  ${pc.red("!")} Manage failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
       }
@@ -376,7 +377,9 @@ program
         console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
         return;
       }
-      console.error(`  ${pc.yellow("!")} This will delete all your calibration data from the Mesh and revoke your API key.`);
+      console.error(
+        `  ${pc.yellow("!")} This will delete all your calibration data from the Mesh and revoke your API key.`,
+      );
       try {
         const resp = await fetch(`${base}/v1/account/delete`, {
           method: "POST",
@@ -595,10 +598,14 @@ program
       const store = createStore(db, config.identityId);
       const routes = options.project
         ? store.getRoutesForProject(options.project)
-        : store.getCalibrationEvents().reduce((acc: string[], e) => {
-            if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
-            return acc;
-          }, []).map((id) => store.getRoute(id)).filter(Boolean);
+        : store
+            .getCalibrationEvents()
+            .reduce((acc: string[], e) => {
+              if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
+              return acc;
+            }, [])
+            .map((id) => store.getRoute(id))
+            .filter(Boolean);
       if (fmt === "json") {
         const data = {
           exported_at: new Date().toISOString(),
@@ -614,7 +621,9 @@ program
         };
         console.log(JSON.stringify(data, null, 2));
       } else {
-        console.error(`  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`);
+        console.error(
+          `  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`,
+        );
       }
       return;
     }
@@ -626,7 +635,7 @@ program
       });
       if (!resp.ok) {
         const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        const detail = err?.detail as string ?? `HTTP ${resp.status}`;
+        const detail = (err?.detail as string) ?? `HTTP ${resp.status}`;
         console.error(`  ${pc.red("!")} Export failed: ${detail}\n`);
         return;
       }
@@ -636,7 +645,9 @@ program
         const calibrations = data.calibrations as Record<string, unknown>[];
         console.log("action,expected_cost,actual_cost,outcome,session_id,created_at");
         for (const c of calibrations) {
-          console.log(`${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`);
+          console.log(
+            `${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`,
+          );
         }
       } else if (fmt === "markdown") {
         const summary = data.summary as Record<string, unknown>;
@@ -655,7 +666,9 @@ program
         }
         console.log("\n## Calibration Events\n");
         for (const c of calibrations) {
-          console.log(`- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`);
+          console.log(
+            `- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`,
+          );
         }
       } else {
         console.log(JSON.stringify(data, null, 2));

@@ -1,6 +1,6 @@
-import { review } from "../core/reviewer.js";
-import type { DataStore } from "../core/ports.js";
 import type { ReviewResult, StructuredError } from "../core/domain.js";
+import type { DataStore } from "../core/ports.js";
+import { review } from "../core/reviewer.js";
 
 export interface ReviewHandlerInput {
   routeId?: string;

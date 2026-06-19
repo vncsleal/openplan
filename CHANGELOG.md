@@ -1,12 +1,27 @@
 # Changelog
 
-## 0.1.13 — 2026-06-19
+## 0.1.15 — 2026-06-19
+
+- **Feat:** FastMCP framework replaces raw MCP SDK — Zod schemas, automatic validation, dev tooling
+- **Feat:** Pool poisoning guard on Mesh API — MAD filter, Bayesian shrinkage, per-key rate limiting
+- **Feat:** Consistency check in checkpoint handler — rejects negative costs, flags 10x+ deviations
+- **Feat:** Personal bias uses Bayesian shrinkage (κ=10) instead of simple AVG
+- **Feat:** Data Retention section in plan.md with industry-standard 30-day rolling window
+- **Fix:** Mesh dedup uses random UUID per batch instead of routeId
+- **Fix:** Rate-limit handling preserves cached baselines instead of clearing on 429
+- **Fix:** `project_type` column on routes table
+- **Fix:** Turso string-to-type conversion for all numeric reads
+- **Fix:** Removed stale `mergeRate`/`reorderRate` from self-diagnostics
+- **Fix:** Removed stale `alternatives`/`clusters` from plan evidence
+- **Fix:** Zod version mismatch — updated to ^4.4.0 (FastMCP requirement)
+- **Chore:** Biome organizeImports enabled — auto-fixed 17 files
+- **Chore:** Removed dead `shx` dependency
+- **Chore:** Consolidated PLAN.md into plan.md (single source of truth)
 
 - **Chore:** Version reads from package.json dynamically — no more hardcoded versions
 - **Fix:** WAL pragma removed from in-memory databases
 - **Fix:** Removed dead RATE_LIMITS dict and unused `_get_tier` function
-- **Fix:** Self-diagnostics now reports `replanTiming`, `mergeRate`, `reorderRate`
-- **Fix:** `project_type` no longer hardcoded to "software" — sent dynamically from route project name
+- **Fix:** `project_type` added to routes table, sent from plan input
 - **Feat:** `openplan install` now asks for consent before writing configs
 - **Feat:** Archive-based hazard detection in `review()`
 
@@ -18,7 +33,6 @@
 - **Feat:** Cost probe starts before first phase
 - **Feat:** Cross-machine export via Mesh API (`openplan export`)
 - **Feat:** Account delete (`openplan account delete`)
-- **Feat:** Archive-based hazard detection in `review()`
 - **Feat:** `openplan mesh on/off` CLI toggle
 - **Feat:** Match-level baselines from Mesh API
 - **Fix:** Personal bias gated behind Pro tier

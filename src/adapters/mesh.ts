@@ -1,4 +1,4 @@
-import type { CostBaseline, CalibrationEvent } from "../core/domain.js";
+import type { CalibrationEvent, CostBaseline } from "../core/domain.js";
 import type { MeshSync } from "../core/ports.js";
 
 function outcomeToMesh(outcome: CalibrationEvent["outcome"]): string {
@@ -21,7 +21,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
           expected_cost: e.expectedCost,
           actual_cost: e.actualCost,
           outcome: outcomeToMesh(e.outcome),
-          session_id: e.routeId ?? "",
+          session_id: crypto.randomUUID(),
           project_type: e.projectType,
           timestamp: new Date(e.createdAt).getTime() / 1000,
         }));
@@ -44,7 +44,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
       }
     },
 
-    async fetchBaselines(): Promise<CostBaseline[]> {
+    async fetchBaselines(): Promise<CostBaseline[] | null> {
       if (!baseUrl) return [];
 
       try {
@@ -54,7 +54,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
         const res = await fetch(`${baseUrl}/v1/baselines`, { headers });
-        if (!res.ok) return [];
+        if (!res.ok) return null;
 
         const body = (await res.json()) as Record<string, unknown>;
         const rawBaselines = (Array.isArray(body) ? body : (body.baselines as Record<string, unknown>[])) ?? [];

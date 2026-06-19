@@ -1,4 +1,4 @@
-# OpenPlan v0.1.8 — Agent Instructions
+# OpenPlan v0.1.14 — Agent Instructions
 
 ## Identity
 
@@ -15,7 +15,7 @@ MCP server for AI-native project planning and cost tracking. `@openplan/mcp` on 
 2. 3 tools, one job each. No modes, no sub-actions.
 3. `.openplan` anchor file at project root for multi-session resumption.
 4. Server auto-creates config on first run — no setup needed.
-5. Architecture reference: `PLAN.md` in repo root.
+5. Architecture reference: `plan.md` in repo root.
 
 ## Commands
 

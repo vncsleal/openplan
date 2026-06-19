@@ -1,16 +1,16 @@
 import type {
-  Route,
-  NewRoute,
-  RoutePhase,
-  NewPhase,
   CalibrationEvent,
-  NewCalibrationEvent,
-  CorrectionEvent,
-  NewCorrectionEvent,
-  CostBaseline,
   CompletedSequence,
-  RouteState,
+  CorrectionEvent,
+  CostBaseline,
+  NewCalibrationEvent,
+  NewCorrectionEvent,
+  NewPhase,
+  NewRoute,
   PhaseStatus,
+  Route,
+  RoutePhase,
+  RouteState,
 } from "./domain.js";
 
 export interface DataStore {
@@ -69,6 +69,6 @@ export interface CostProbe {
 
 export interface MeshSync {
   syncCheckpoints(events: CalibrationEvent[]): Promise<boolean>;
-  fetchBaselines(): Promise<CostBaseline[]>;
+  fetchBaselines(): Promise<CostBaseline[] | null>;
   isReachable(): Promise<boolean>;
 }

@@ -1,6 +1,6 @@
+import type { PlanResult, StructuredError } from "../core/domain.js";
 import { plan } from "../core/planner.js";
 import type { DataStore } from "../core/ports.js";
-import type { PlanResult, StructuredError } from "../core/domain.js";
 
 export interface PlanHandlerInput {
   goal: string;

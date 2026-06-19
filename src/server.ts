@@ -1,25 +1,19 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { createStore } from "./db/store.js";
-import { openDatabase, closeDatabase } from "./db/connection.js";
-import { loadConfig, getDataDir } from "./config.js";
-import { handlePlan } from "./handlers/plan-handler.js";
-import { handleCheckpoint } from "./handlers/checkpoint-handler.js";
-import { handleReview } from "./handlers/review-handler.js";
-import { getRouteResource, getProfilesResource, getSyncStatusResource } from "./handlers/resources.js";
-import { createMeshSync } from "./adapters/mesh.js";
-import { createTimerCostProbe, createShellCostProbe } from "./adapters/cost-probe.js";
-import type { MeshSync } from "./core/ports.js";
-import type { StructuredError } from "./core/domain.js";
-import { join, dirname } from "node:path";
-import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FastMCP } from "fastmcp";
+import { z } from "zod";
+import { createShellCostProbe, createTimerCostProbe } from "./adapters/cost-probe.js";
+import { createMeshSync } from "./adapters/mesh.js";
+import { getDataDir, loadConfig } from "./config.js";
+import type { StructuredError } from "./core/domain.js";
+import type { MeshSync } from "./core/ports.js";
+import { closeDatabase, openDatabase } from "./db/connection.js";
+import { createStore } from "./db/store.js";
+import { handleCheckpoint } from "./handlers/checkpoint-handler.js";
+import { handlePlan } from "./handlers/plan-handler.js";
+import { getProfilesResource, getRouteResource, getSyncStatusResource } from "./handlers/resources.js";
+import { handleReview } from "./handlers/review-handler.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
@@ -29,10 +23,8 @@ export async function startServer(): Promise<void> {
   const dbPath = join(getDataDir(), "openplan.db");
   const db = openDatabase(dbPath);
   const store = createStore(db, config.identityId);
-  // Prevent dangling connection on unhandled rejections
   process.on("unhandledRejection", () => closeDatabase());
 
-  // Host detection from env vars
   const hostId = process.env.OPENCODE_SESSION_ID
     ? ("opencode" as const)
     : process.env.CLAUDE_SESSION_ID
@@ -43,21 +35,14 @@ export async function startServer(): Promise<void> {
 
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
-  // Cost probe: use shell command if configured, otherwise timer-based
-  // Host-specific defaults per detected host
-  const costProbe = config.costProbeCommand
-    ? createShellCostProbe(config.costProbeCommand)
-    : hostId === "opencode"
-      ? createTimerCostProbe()
-      : createTimerCostProbe();
+  const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createTimerCostProbe();
 
-  // Pull baselines immediately on start, then every 5 minutes
   (async () => {
     try {
       const baselines = await meshSync.fetchBaselines();
-      if (baselines.length > 0) store.setBaselines(baselines);
+      if (baselines !== null) store.setBaselines(baselines);
     } catch {
-      // Non-fatal: server works with cached/stale baselines
+      // Non-fatal
     }
   })();
 
@@ -70,19 +55,17 @@ export async function startServer(): Promise<void> {
           if (ok) store.markCalibrationSynced(unsynced.map((e) => e.id));
         }
         const baselines = await meshSync.fetchBaselines();
-        if (baselines.length > 0) {
+        if (baselines !== null) {
           store.setBaselines(baselines);
         }
       } catch {
-        // Background sync failures are non-fatal; retry on next interval
-        // Wire MESH_UNREACHABLE — the sync-status resource and review report it
+        // Background sync failures are non-fatal
       }
     },
     5 * 60 * 1000,
   );
   syncInterval.unref();
 
-  // Ship at rest
   let isShuttingDown = false;
 
   function shutdown(): void {
@@ -96,206 +79,146 @@ export async function startServer(): Promise<void> {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  const server = new Server(
-    {
-      name: "openplan",
-      version: pkg.version,
-    },
-    {
-      capabilities: {
-        tools: {},
-        resources: {},
-      },
-    },
-  );
+  const server = new FastMCP({
+    name: "openplan",
+    version: pkg.version as `${number}.${number}.${number}`,
+  });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: "plan",
-        description: "Decompose a goal into a costed route with phases, estimates, and evidence",
-        inputSchema: {
-          type: "object",
-          properties: {
-            goal: { type: "string", description: "The goal to plan" },
-            context: { type: "string", description: "Optional context for better decomposition" },
-            replan: { type: "boolean", description: "Archive current route and create fresh decomposition" },
-            project: { type: "string", description: "Project name (defaults to OPENPLAN_PROJECT env or 'default')" },
-          },
-          required: ["goal"],
-        },
-        annotations: {
-          readOnlyHint: true,
-        },
-      },
-      {
-        name: "checkpoint",
-        description: "Record phase completion with cost, correct a cost, or get current route state",
-        inputSchema: {
-          type: "object",
-          properties: {
-            phase: { type: "string", description: "Phase label to checkpoint (omit for status check)" },
-            actual_cost: { type: "number", description: "Actual cost in seconds for this phase" },
-            correct: { type: "number", description: "Correct the last actual_cost for this phase" },
-            route_id: { type: "string", description: "Route ID (optional if project is provided)" },
-            project: { type: "string", description: "Project name (optional if route_id is provided)" },
-          },
-        },
-        annotations: {
-          destructiveHint: true,
-        },
-      },
-      {
-        name: "review",
-        description: "Session retrospective with summary, deviations, accuracy, cost/path learning, and diagnostics",
-        inputSchema: {
-          type: "object",
-          properties: {
-            route_id: { type: "string", description: "Route ID (optional if project is provided)" },
-            project: { type: "string", description: "Project name (optional if route_id is provided)" },
-          },
-        },
-        annotations: {
-          readOnlyHint: true,
-        },
-      },
-    ],
-  }));
+  // ── plan tool ─────────────────────────────────────────────────────────────
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    const safeArgs = args as Record<string, unknown> | undefined;
-    const project = (safeArgs?.project as string | undefined) ?? process.env.OPENPLAN_PROJECT ?? "default";
+  server.addTool({
+    name: "plan",
+    description: "Decompose a goal into a costed route with phases, estimates, and evidence",
+    parameters: z.object({
+      goal: z.string().min(1, "goal is required"),
+      context: z.string().optional(),
+      replan: z.boolean().optional(),
+      project: z.string().optional(),
+    }),
+    annotations: { readOnlyHint: true },
+    execute: async (args) => {
+      const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
+      if (!args.goal || args.goal.trim().length === 0) {
+        return JSON.stringify({
+          error: { code: "INVALID_ARGUMENT", message: "goal is required and must be non-empty", param: "goal" },
+        } as StructuredError);
+      }
 
-    switch (name) {
-      case "plan": {
-        const goal = safeArgs?.goal;
-        if (typeof goal !== "string" || goal.trim().length === 0) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: { code: "INVALID_ARGUMENT", message: "goal is required and must be non-empty", param: "goal" },
-                }),
-              },
-            ],
-          };
-        }
-        // Check Pro tier for personal bias — cached per session
-        let isPro = false;
-        if (config.apiKey) {
-          try {
-            const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
-              headers: { Authorization: `Bearer ${config.apiKey}` },
-              signal: AbortSignal.timeout(3000),
-            });
-            if (acctResp.ok) {
-              const acct = (await acctResp.json()) as Record<string, unknown>;
-              isPro = acct.tier === "pro";
-            }
-          } catch {
-            // Mesh unreachable — assume Free, no personal bias
+      let isPro = false;
+      if (config.apiKey) {
+        try {
+          const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
+            headers: { Authorization: `Bearer ${config.apiKey}` },
+            signal: AbortSignal.timeout(3000),
+          });
+          if (acctResp.ok) {
+            const acct = (await acctResp.json()) as Record<string, unknown>;
+            isPro = acct.tier === "pro";
           }
+        } catch {
+          // assume Free
         }
-        const result = handlePlan({
-          goal,
-          context: typeof safeArgs?.context === "string" ? safeArgs.context : undefined,
-          replan: typeof safeArgs?.replan === "boolean" ? safeArgs.replan : undefined,
-          project,
-          store,
-          isPro,
-        });
-
-        if (!("error" in result)) {
-          const anchorPath = join(config.projectRoot, ".openplan");
-          try {
-            writeFileSync(anchorPath, JSON.stringify({ project, routeId: result.id }, null, 2), "utf-8");
-          } catch {
-            // Non-fatal: anchor file is a convenience
-          }
-          // Start cost probe for the first phase
-          costProbe.start();
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
       }
 
-      case "checkpoint": {
-        const probeCost = costProbe.stop();
+      const result = handlePlan({
+        goal: args.goal.trim(),
+        context: args.context,
+        replan: args.replan,
+        project,
+        store,
+        isPro,
+      });
 
-        const result = handleCheckpoint({
-          phase: typeof safeArgs?.phase === "string" ? safeArgs.phase : undefined,
-          actualCost: typeof safeArgs?.actual_cost === "number" ? safeArgs.actual_cost : (probeCost ?? undefined),
-          correct: typeof safeArgs?.correct === "number" ? safeArgs.correct : undefined,
-          routeId: typeof safeArgs?.route_id === "string" ? safeArgs.route_id : undefined,
-          project: typeof safeArgs?.project === "string" ? safeArgs.project : undefined,
-          store,
-        });
-
-        if (!("error" in result) && "nextPhase" in result && result.nextPhase) {
-          costProbe.start();
+      if (!("error" in result)) {
+        const anchorPath = join(config.projectRoot, ".openplan");
+        try {
+          writeFileSync(anchorPath, JSON.stringify({ project, routeId: result.id }, null, 2), "utf-8");
+        } catch {
+          // Non-fatal
         }
-
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        costProbe.start();
       }
 
-      case "review": {
-        const meshReachable = await meshSync.isReachable();
-        const result = handleReview({
-          routeId: typeof safeArgs?.route_id === "string" ? safeArgs.route_id : undefined,
-          project: typeof safeArgs?.project === "string" ? safeArgs.project : undefined,
-          store,
-          meshReachable,
-        });
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      return JSON.stringify(result);
+    },
+  });
+
+  // ── checkpoint tool ───────────────────────────────────────────────────────
+
+  server.addTool({
+    name: "checkpoint",
+    description: "Record phase completion with cost, correct a cost, or get current route state",
+    parameters: z.object({
+      phase: z.string().optional(),
+      actual_cost: z.number().optional(),
+      correct: z.number().optional(),
+      route_id: z.string().optional(),
+      project: z.string().optional(),
+    }),
+    annotations: { destructiveHint: true },
+    execute: async (args) => {
+      const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
+      const probeCost = costProbe.stop();
+
+      const result = handleCheckpoint({
+        phase: args.phase,
+        actualCost: args.actual_cost ?? probeCost ?? undefined,
+        correct: args.correct,
+        routeId: args.route_id,
+        project,
+        store,
+      });
+
+      if (!("error" in result) && "nextPhase" in result && result.nextPhase) {
+        costProbe.start();
       }
 
-      default:
+      return JSON.stringify(result);
+    },
+  });
+
+  // ── review tool ───────────────────────────────────────────────────────────
+
+  server.addTool({
+    name: "review",
+    description: "Session retrospective with summary, deviations, accuracy, cost/path learning, and diagnostics",
+    parameters: z.object({
+      route_id: z.string().optional(),
+      project: z.string().optional(),
+    }),
+    annotations: { readOnlyHint: true },
+    execute: async (args) => {
+      const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
+      const meshReachable = await meshSync.isReachable();
+      const result = handleReview({ routeId: args.route_id, project, store, meshReachable });
+      return JSON.stringify(result);
+    },
+  });
+
+  // ── Resources ─────────────────────────────────────────────────────────────
+
+  server.addResourceTemplate({
+    uriTemplate: "openplan://{project}/route",
+    name: "Current Route State",
+    mimeType: "application/json",
+    arguments: [{ name: "project", description: "Project name", required: true }],
+    async load({ project }) {
+      const resource = getRouteResource(project, store);
+      if (!resource) {
         return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: { code: "INVALID_ARGUMENT", message: `Unknown tool: ${name}` },
-              } as StructuredError),
-            },
-          ],
+          text: JSON.stringify({ error: { code: "NOT_FOUND", message: `No active route for project "${project}"` } }),
         };
-    }
+      }
+      return { text: resource.text };
+    },
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const meshReachable = await meshSync.isReachable();
-    return {
-      resources: [
-        {
-          uri: "openplan://{project}/route",
-          name: "Current Route State",
-          description: "Read current route state for a project: openplan://{project}/route",
-          mimeType: "application/json",
-        },
-        {
-          uri: "openplan://profiles",
-          name: "Personal Profiles",
-          description: "Personal bias, accuracy by action, sample counts",
-          mimeType: "application/json",
-        },
-        {
-          uri: "openplan://sync-status",
-          name: "Mesh Sync Status",
-          description: `Health check: mesh reachable (${meshReachable ? "yes" : "no"}), pending checkpoints, buffer, version`,
-          mimeType: "application/json",
-        },
-      ],
-    };
-  });
-
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params;
-
-    if (uri === "openplan://profiles") {
-      // Check Pro tier for personal bias display
+  server.addResource({
+    uri: "openplan://profiles",
+    name: "Personal Profiles",
+    mimeType: "application/json",
+    description: "Personal bias, accuracy by action, sample counts",
+    async load() {
       let isPro = false;
       if (config.apiKey) {
         try {
@@ -312,47 +235,21 @@ export async function startServer(): Promise<void> {
         }
       }
       const resource = getProfilesResource(store, isPro);
-      return { contents: [resource] };
-    }
-
-    if (uri === "openplan://sync-status") {
-      const meshReachable = await meshSync.isReachable();
-      const resource = getSyncStatusResource(store, meshReachable);
-      return { contents: [resource] };
-    }
-
-    const routePattern = /^openplan:\/\/([^/]+)\/route$/;
-    const routeMatch = uri.match(routePattern);
-    if (routeMatch) {
-      const resourceProject = routeMatch[1];
-      const resource = getRouteResource(resourceProject, store);
-      if (!resource) {
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: "application/json",
-              text: JSON.stringify({
-                error: { code: "NOT_FOUND", message: `No active route for project "${resourceProject}"` },
-              }),
-            },
-          ],
-        };
-      }
-      return { contents: [resource] };
-    }
-
-    return {
-      contents: [
-        {
-          uri,
-          mimeType: "application/json",
-          text: JSON.stringify({ error: { code: "INVALID_ARGUMENT", message: `Unknown resource: ${uri}` } }),
-        },
-      ],
-    };
+      return { text: resource.text };
+    },
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  server.addResource({
+    uri: "openplan://sync-status",
+    name: "Mesh Sync Status",
+    mimeType: "application/json",
+    description: "Health check: mesh reachable, pending checkpoints, buffer, version",
+    async load() {
+      const meshReachable = await meshSync.isReachable();
+      const resource = getSyncStatusResource(store, meshReachable);
+      return { text: resource.text };
+    },
+  });
+
+  await server.start({ transportType: "stdio" });
 }

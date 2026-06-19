@@ -1,7 +1,7 @@
-import type { DataStore } from "./ports.js";
-import type { PlanPhase, PlanResult, ArchivedRoute, StructuredError } from "./domain.js";
-import { tokenize, matchLevel } from "./tokenizer.js";
 import { ciFromBaseline, personalBias } from "./costs.js";
+import type { ArchivedRoute, PlanPhase, PlanResult, StructuredError } from "./domain.js";
+import type { DataStore } from "./ports.js";
+import { matchLevel, tokenize } from "./tokenizer.js";
 
 export interface PlanInput {
   goal: string;
@@ -41,7 +41,9 @@ function estimateAction(action: string): number {
   return weights[action] ?? 400;
 }
 
-function actionEfficiencyFromSequences(sequences: { actionSequence: string; efficiency: number }[]): Map<string, number> {
+function actionEfficiencyFromSequences(
+  sequences: { actionSequence: string; efficiency: number }[],
+): Map<string, number> {
   const byAction = new Map<string, number[]>();
   for (const seq of sequences) {
     const actions = seq.actionSequence.split(",");
@@ -141,7 +143,11 @@ export function plan(input: PlanInput): PlanResult | StructuredError {
     const active = store.getActiveRoute(project);
     if (active) {
       return {
-        error: { code: "CONFLICT", message: `Project "${project}" already has an active route with a different goal: "${active.goal}". Use replan=true to archive it.`, param: "project" },
+        error: {
+          code: "CONFLICT",
+          message: `Project "${project}" already has an active route with a different goal: "${active.goal}". Use replan=true to archive it.`,
+          param: "project",
+        },
       };
     }
   }
@@ -155,10 +161,11 @@ export function plan(input: PlanInput): PlanResult | StructuredError {
       goal,
       goalTokens,
       identityId,
+      projectType: "software",
     });
 
     const baselines = store.getBaselines();
-    const bias = personalBias(store.getCalibrationEvents());
+    const bias = personalBias(store.getCalibrationEvents(), baselines);
     const sequences = store.getSequences();
     const actionEff = actionEfficiencyFromSequences(sequences);
 
@@ -215,7 +222,7 @@ function buildPlanResult(
 ): PlanResult {
   const baselines = store.getBaselines();
   const events = store.getCalibrationEvents();
-  const bias = personalBias(events);
+  const bias = personalBias(events, baselines);
 
   const planPhases = phases.map((p) => {
     const baseline = ciFromBaseline(baselines, tokenize(route.goal), tokenize(p.label), p.action);
@@ -243,8 +250,6 @@ function buildPlanResult(
     status: route.status,
     phases: planPhases,
     evidence: {
-      alternatives: [],
-      clusters: [],
       hazards: phases
         .filter((p): p is typeof p & { hazards: string } => p.hazards !== null)
         .map((p) => p.hazards)

@@ -1,4 +1,4 @@
-import type { CostBaseline, CalibrationEvent, RoutePhase } from "./domain.js";
+import type { CalibrationEvent, CostBaseline, RoutePhase } from "./domain.js";
 
 export function calculateDeviation(actual: number, expected: number): number {
   if (expected === 0) return actual > 0 ? Number.POSITIVE_INFINITY : 0;
@@ -15,14 +15,40 @@ export function deviationLabel(
   return deviation < 0 ? "under" : "over";
 }
 
-export function personalBias(events: CalibrationEvent[]): number | null {
-  const ratios = events.filter((e) => e.expectedCost > 0).map((e) => e.actualCost / e.expectedCost);
+export function personalBias(events: CalibrationEvent[], baselines: CostBaseline[]): number | null {
+  if (events.length === 0) return null;
 
-  if (ratios.length === 0) return null;
+  const byAction = new Map<string, number[]>();
+  for (const e of events) {
+    if (e.expectedCost <= 0) continue;
+    const ratio = e.actualCost / e.expectedCost;
+    const existing = byAction.get(e.action) ?? [];
+    existing.push(ratio);
+    byAction.set(e.action, existing);
+  }
 
-  const sum = ratios.reduce((a, b) => a + b, 0);
-  const mean = sum / ratios.length;
-  return Number(mean.toFixed(3));
+  if (byAction.size === 0) return null;
+
+  const poolPrior = 1.0;
+  const kappa = 10;
+  let totalWeight = 0;
+  let blendedSum = 0;
+
+  for (const [, ratios] of byAction) {
+    const n = ratios.length;
+    const sorted = [...ratios].sort((a, b) => a - b);
+    const personalMedian =
+      sorted.length % 2 === 0
+        ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+        : sorted[Math.floor(sorted.length / 2)];
+
+    const blended = (n * personalMedian + kappa * poolPrior) / (n + kappa);
+    blendedSum += blended * n;
+    totalWeight += n;
+  }
+
+  const result = totalWeight > 0 ? blendedSum / totalWeight : null;
+  return result !== null ? Number(result.toFixed(3)) : null;
 }
 
 export function accuracyByAction(events: CalibrationEvent[]): {

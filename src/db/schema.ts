@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const routeStatus = ["active", "archived", "completed"] as const;
 type RouteStatus = (typeof routeStatus)[number];
@@ -19,6 +19,7 @@ export const routes = sqliteTable("routes", {
   goalTokens: text("goal_tokens").notNull(),
   status: text("status").$type<RouteStatus>().notNull().default("active"),
   identityId: text("identity_id").notNull(),
+  projectType: text("project_type").notNull().default("software"),
   totalExpected: real("total_expected"),
   totalActual: real("total_actual"),
   createdAt: text("created_at").notNull(),

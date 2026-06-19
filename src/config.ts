@@ -1,8 +1,8 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir, platform } from "node:os";
-import { parse, stringify } from "smol-toml";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
+import { join } from "node:path";
+import { parse, stringify } from "smol-toml";
 
 type TomlDoc = Record<string, unknown>;
 
@@ -76,7 +76,9 @@ export function loadConfig(): OpenPlanConfig {
     identityId,
     projectRoot: process.env.OPENPLAN_PROJECT_ROOT ?? process.cwd(),
     dataDir: getDataDir(),
-    meshUrl: meshEnabled ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc") : null,
+    meshUrl: meshEnabled
+      ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc")
+      : null,
     apiKey: process.env.OPENPLAN_API_KEY ?? (meshSection?.api_key as string | undefined) ?? null,
     costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? (costProbeSection?.command as string | undefined) ?? null,
   };

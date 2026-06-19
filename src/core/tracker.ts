@@ -1,6 +1,6 @@
-import type { DataStore } from "./ports.js";
-import type { CheckpointResult, PlanPhase, RouteState, RoutePhase, StructuredError } from "./domain.js";
 import { calculateDeviation, deviationLabel, hazardFromPhases } from "./costs.js";
+import type { CheckpointResult, PlanPhase, RoutePhase, RouteState, StructuredError } from "./domain.js";
+import type { DataStore } from "./ports.js";
 
 export interface CheckpointInput {
   phase?: string;
