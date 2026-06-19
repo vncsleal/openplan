@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.12 — 2026-06-19
+
+- **Feat:** Path learning — `plan()` reads completed sequences for action-level efficiency
+- **Feat:** Baseline fetch on server start (no more 5min delay)
+- **Feat:** Conflict detection — `CONFLICT` error when same project gets different goal
+- **Feat:** Cost probe starts before first phase
+- **Feat:** Cross-machine export via Mesh API (`openplan export`)
+- **Feat:** Account delete (`openplan account delete`)
+- **Feat:** Archive-based hazard detection in `review()`
+- **Feat:** `openplan mesh on/off` CLI toggle
+- **Feat:** Match-level baselines from Mesh API
+- **Fix:** Personal bias gated behind Pro tier
+- **Fix:** Export gated behind Pro subscription
+- **Fix:** Profiles resource respects Pro tier
+- **Fix:** Rate limiting — push unlimited, pull 100/day free, 24h window
+- **Fix:** Mesh API sends/receives `phase_label_tokens` for match-level aggregation
+- **Fix:** Turso adapter compatibility with `SELECT changes()`
+- **Fix:** Removed dead `MESH_UNREACHABLE` error code
+- **Fix:** PLAN.md synchronized with Free/Pro model and implementation
+
 ## 0.1.10 — 2026-06-18
 
 - **Feat:** `openplan subscribe manage` — Stripe Customer Portal for cancellations and billing management
