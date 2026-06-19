@@ -500,6 +500,68 @@ At that point, agent-estimate or a small Bayesian regression model becomes worth
 - Self-hosted Mesh enterprise (private pool, no data leaves the org)
 - Custom probes, deviation alerts, dashboards (requires GUI — not in scope for v0.x)
 
+## Compliance (LGPD / GDPR)
+
+### Classification
+
+OpenPlan is classified as **very low risk**. The data collected (action, tokenized phase label, expected/actual cost, anonymous UUID) is irreversibly anonymized before processing. Per LGPD Art. 12 and GDPR Recital 26, irreversibly anonymized data is not considered personal data. OpenPlan is designed to operate outside the scope of both regulations.
+
+### Legal basis
+
+- **Legitimate interest** (Art. 6(1)(f) GDPR / Art. 10 LGPD) — product analytics and cost estimation improvement. No consent required because data is anonymized.
+- **Contract** (Art. 6(1)(b) GDPR) — Stripe subscription processing for Pro users. Limited to billing email and Stripe customer ID.
+
+### Data collected
+
+All fields are anonymized or non-identifying:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `action` | string | Type of work performed (implement, design, test, etc.) |
+| `phase_label_tokens` | tokenized string | Lowercased, stop words removed, max 50 tokens. Raw label never transmitted. |
+| `expected_cost` | float | Estimated cost in seconds |
+| `actual_cost` | float | Actual cost reported by checkpoint() |
+| `outcome` | string | success / partial / failure |
+| `project_type` | string | High-level category ("software") |
+| `session_id` | random UUID | Deduplication — not linkable to identity |
+| `timestamp` | unix time | Event creation time |
+
+### Data NOT collected
+
+Source code, file paths, project names (raw), agent prompts/responses, raw phase labels, API keys, credentials, email (except Stripe billing), IP addresses (server-side), browser fingerprints, cookies.
+
+### Data subject rights (LGPD / GDPR)
+
+All rights are exercisable via CLI:
+
+| Right | Implementation |
+|-------|---------------|
+| **Access** | `openplan export` — JSON/CSV of all calibration data. Response within 15 days. |
+| **Correction** | `checkpoint(phase, correct=value)` — inaccurate costs can be corrected. |
+| **Erasure** | `openplan account delete` — deletes all calibration events and revokes API key. Deletion completes within 30 days. |
+| **Portability** | `openplan export --format json` — machine-readable JSON output. |
+| **Withdraw consent** | `openplan mesh off` — disables Mesh sync. No further data sent. |
+
+### Data Protection Officer
+
+- **DPO:** Vinicius Leal
+- **Email:** oi@iamvini.co
+- **Response time:** 15 days (LGPD) / 30 days (GDPR)
+
+### International transfers
+
+- **Mesh API:** Fly.io (US) — SCCs in place with Fly.io.
+- **Database:** Turso (US) — calibration events, API keys, subscriptions.
+- **MCP Server:** Local machine — no data leaves your environment unless Mesh sync is enabled.
+
+### Data Processing Agreement (DPA)
+
+Required for enterprise accounts where OpenPlan processes data on behalf of a third party. MVP stage: OpenPlan is the data controller for its own anonymized calibration data. DPA available on request once enterprise tier is implemented.
+
+### Record of Processing Activities (ROPA)
+
+Maintained internally. Covers: calibration event storage (Turso, US), API key storage (Turso, US), subscription data (Turso, US + Stripe). Updated quarterly.
+
 ### Non-goals
 
 - No gating of MCP server features. The server is MIT.
