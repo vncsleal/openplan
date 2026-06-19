@@ -225,6 +225,7 @@ export interface SelfDiagnostics {
   skipRate: number | null;
   hazardPrecision: number | null;
   hazardRecall: number | null;
+  structuralHazards: string[];
 }
 
 export interface MeshSyncStatus {

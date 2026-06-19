@@ -101,6 +101,24 @@ export function review(input: ReviewInput): ReviewResult | StructuredError {
   const phaseAbandonRate = phases.length > 0 ? skippedPhases.length / phases.length : null;
   const skipRate = phases.length > 0 ? skippedPhases.length / phases.length : null;
 
+  // Archive-based hazards: same phase label skipped in 3+ projects
+  const abandonCounts = new Map<string, number>();
+  const allProjectRoutes = store.getRoutesForProject(route.project);
+  for (const r of allProjectRoutes) {
+    const routePhases = store.getPhases(r.id);
+    for (const p of routePhases) {
+      if (p.status === "skipped") {
+        abandonCounts.set(p.label, (abandonCounts.get(p.label) ?? 0) + 1);
+      }
+    }
+  }
+  const structuralHazards: string[] = [];
+  for (const [label, count] of abandonCounts) {
+    if (count >= 3) {
+      structuralHazards.push(`Phase "${label}" has been abandoned in ${count} projects — consider re-evaluating its approach`);
+    }
+  }
+
   const hazardCount = phases.filter((p) => p.hazards).length;
   const highVarianceCount = completedPhases.filter((p) => {
     if (p.actualCost === null || p.expectedCost === null || p.expectedCost === 0) return false;
@@ -117,6 +135,7 @@ export function review(input: ReviewInput): ReviewResult | StructuredError {
     skipRate: skipRate !== null ? Number(skipRate.toFixed(3)) : null,
     hazardPrecision: hazardPrecision !== null ? Number(hazardPrecision.toFixed(3)) : null,
     hazardRecall: hazardRecall !== null ? Number(hazardRecall.toFixed(3)) : null,
+    structuralHazards,
   };
 
   const totalEvents = store.getCalibrationEvents().length;
