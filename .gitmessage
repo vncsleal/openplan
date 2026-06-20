@@ -1,0 +1,11 @@
+# <type>[optional scope]: <description>
+#
+# Types: feat | fix | docs | refactor | test | chore | perf | ci | security
+# Examples:
+#   feat: add completion command
+#   fix: account delete error path exits with code 1
+#   docs: update README with portal command
+#   security: rotate leaked tokens, purge from history
+#
+# Keep under 72 characters. Use imperative mood.
+# Do NOT paste environment variables, tokens, or URLs here.

@@ -1,0 +1,23 @@
+# Gitleaks config for OpenPlan
+# Extends default rules with project-specific patterns
+
+[allowlist]
+  description = "Known safe files"
+  paths = [
+    "node_modules/",
+    "dist/",
+    ".git/",
+    "package-lock.json",
+  ]
+
+[[rules]]
+  id = "openplan-placeholder-token"
+  description = "OpenPlan placeholder token not replaced"
+  regex = '''__VG_\w+_\w+__'''
+  keywords = ["__VG_"]
+
+[[rules]]
+  id = "env-var-in-commit-message"
+  description = "Environment variable pattern in commit message"
+  regex = '''[A-Z_]+=([a-zA-Z0-9_\-]{16,})'''
+  keywords = ["="]
