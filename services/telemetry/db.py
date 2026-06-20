@@ -436,6 +436,11 @@ def increment_rate_limit(
         "VALUES (?, ?, COALESCE((SELECT count + ? FROM rate_limits WHERE api_key = ? AND window_start = ?), ?))",
         (api_key, window_start, count, api_key, window_start, count),
     )
+    # Lazy cleanup: purge entries older than max window + safety margin
+    conn.execute(
+        "DELETE FROM rate_limits WHERE window_start < ?",
+        (math.floor((now - 90000) / 60) * 60,),
+    )
 
 
 def get_key_usage(conn: Any, api_key: str) -> dict[str, Any]:
