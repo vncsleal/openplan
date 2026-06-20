@@ -423,7 +423,7 @@ program
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
           console.error(`  ${pc.red("!")} Delete failed: ${err?.detail ?? `HTTP ${resp.status}`}\n`);
-          return;
+          process.exit(1);
         }
         console.error(`  ${pc.green("*")} Account data deleted from Mesh.\n`);
       } catch (e) {
