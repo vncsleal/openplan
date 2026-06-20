@@ -287,7 +287,61 @@ program
     }
   });
 
-// ── subscribe ────────────────────────────────────────────────────────────────
+// ── completion ────────────────────────────────────────────────────────────────
+
+const COMPLETION_SCRIPT: Record<string, string> = {};
+
+COMPLETION_SCRIPT.bash = [
+  "_openplan_completions() {",
+  '  local cur prev opts; COMPREPLY=()',
+  '  cur="${COMP_WORDS[COMP_CWORD]}"',
+  '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
+  '  opts="--help --json --no-color --version install auth subscribe portal account config mesh status log export help"',
+  '  if [[ ${cur} == -* ]]; then COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
+  '  else COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
+  "  fi",
+  "  return 0",
+  "}",
+  "complete -F _openplan_completions openplan",
+].join("\n");
+
+COMPLETION_SCRIPT.zsh = [
+  "#compdef openplan",
+  "_arguments \\",
+  '  "--help[display help]" \\',
+  '  "--json[output in JSON format]" \\',
+  '  "--no-color[disable color output]" \\',
+  '  "--version[show version]" \\',
+  '  "1: :(install auth subscribe portal account config mesh status log export help)" \\',
+  '  "*::arg:->args"',
+].join("\n");
+
+COMPLETION_SCRIPT.fish = [
+  "function _openplan_completions",
+  "  set -l cmds install auth subscribe portal account config mesh status log export help",
+  '  complete -c openplan -f -a "$cmds" -d "OpenPlan command"',
+  '  complete -c openplan -l help -d "display help"',
+  '  complete -c openplan -l json -d "output in JSON format"',
+  '  complete -c openplan -l no-color -d "disable color output"',
+  '  complete -c openplan -l version -d "show version"',
+  "end",
+  "_openplan_completions",
+].join("\n");
+
+program
+  .command("completion")
+  .description("Generate shell completion script")
+  .argument("[shell]", "Shell type: bash, zsh, fish", "bash")
+  .action((shell: string) => {
+    const script = COMPLETION_SCRIPT[shell as keyof typeof COMPLETION_SCRIPT];
+    if (!script) {
+      console.error(`  ${pc.red("!")} Unsupported shell: "${shell}". Supported: bash, zsh, fish.\n`);
+      process.exit(1);
+    }
+    console.log(script.trimStart());
+  });
+
+// ── doctor ────────────────────────────────────────────────────────────────────
 
 program
   .command("subscribe")
@@ -737,6 +791,123 @@ program
       }
     } catch (e) {
       console.error(`  ${pc.red("!")} Export failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      process.exit(1);
+    }
+  });
+
+// ── doctor ────────────────────────────────────────────────────────────────────
+
+program
+  .command("doctor")
+  .description("Check system health and diagnose issues")
+  .action(async () => {
+    const config = loadConfig();
+    const base = meshUrl();
+    let ok = true;
+
+    async function check(label: string, fn: () => Promise<string | null>): Promise<void> {
+      try {
+        const msg = await fn();
+        if (msg === null) {
+          console.error(`  ${pc.green("*")} ${label}`);
+        } else {
+          console.error(`  ${pc.red("!")} ${label}: ${msg}`);
+          ok = false;
+        }
+      } catch (e) {
+        console.error(`  ${pc.red("!")} ${label}: ${e instanceof Error ? e.message : "unknown error"}`);
+        ok = false;
+      }
+    }
+
+    console.error("");
+
+    await check("Node.js version", async () => {
+      const [major] = process.versions.node.split(".").map(Number);
+      return major >= 20 ? null : `Node.js ${process.versions.node} (<20) — upgrade required`;
+    });
+
+    await check("Config file", async () => {
+      const cfgPath = getConfigPath();
+      if (!existsSync(cfgPath)) return "not found — will be auto-created on first MCP server start";
+      try {
+        const raw = readFileSync(cfgPath, "utf-8");
+        parse(raw);
+        return null;
+      } catch {
+        return "invalid TOML — check the file format";
+      }
+    });
+
+    await check("SQLite database", async () => {
+      const dbPath = join(getDataDir(), "openplan.db");
+      if (!existsSync(dbPath)) return "not found — run a plan() to create it";
+      const db = openDatabase(dbPath);
+      const row = db.$client.prepare("SELECT COUNT(*) AS cnt FROM calibration_events").get() as { cnt: number | null } | undefined;
+      if (row && typeof row.cnt === "number") {
+        console.error(`  ${pc.green("*")} OK — ${row.cnt} calibration events`);
+      }
+      return "skip";
+    });
+
+    await check("Identity", async () => {
+      if (!config.identityId) return "not generated";
+      if (!/^[0-9a-f-]{36}$/i.test(config.identityId)) return "invalid UUID format";
+      return null;
+    });
+
+    await check("Mesh connectivity", async () => {
+      const resp = await fetch(`${base}/v1/health`, { signal: AbortSignal.timeout(5000) });
+      if (!resp.ok) return `unreachable (HTTP ${resp.status})`;
+      return null;
+    });
+
+    await check("API key", async () => {
+      if (!config.apiKey) return "not configured — run `openplan auth`";
+      const resp = await fetch(`${base}/v1/account`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.status === 404) return "invalid or revoked — run `openplan auth` again";
+      if (!resp.ok) return `unreachable (HTTP ${resp.status})`;
+      const data = (await resp.json()) as Record<string, unknown>;
+      if (data.tier === "pro") return null;
+      return null; // free tier is valid
+    });
+
+    await check("Subscription", async () => {
+      if (!config.apiKey) return "not authenticated";
+      const resp = await fetch(`${base}/v1/account`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!resp.ok) return "unreachable";
+      const data = (await resp.json()) as Record<string, unknown>;
+      if (data.tier === "pro") {
+        const ends = data.current_period_end
+          ? ` (expires ${new Date((data.current_period_end as number) * 1000).toISOString().slice(0, 10)})`
+          : "";
+        console.error(`  ${pc.green("*")} Pro${ends}`);
+      } else {
+        console.error(`  ${pc.green("*")} Free`);
+      }
+      return "skip"; // already printed inline
+    });
+
+    await check("Disk space", async () => {
+      // macOS df reports in 512-byte blocks
+      const { execSync } = await import("node:child_process");
+      const out = execSync("df -k /tmp").toString().trim().split("\n").pop()?.split(/\s+/);
+      if (out?.[3]) {
+        const freeKB = Number.parseInt(out[3], 10);
+        if (freeKB < 100_000) return `low disk space (~${Math.round(freeKB / 1024)}MB free)`;
+      }
+      return null;
+    });
+
+    console.error("");
+    if (!ok) {
+      console.error(`  ${pc.yellow("?")} Some checks failed. Run \`openplan doctor\` again after fixing.\n`);
       process.exit(1);
     }
   });

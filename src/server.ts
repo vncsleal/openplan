@@ -88,7 +88,7 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "plan",
-    description: "Decompose a goal into a costed route. Returns phases with estimates, evidence (hazards), personal bias, and archived routes",
+    description: "Decompose a goal into a costed route. Returns phases with estimates, confidence intervals (requires Mesh baselines, otherwise null), evidence (hazards), personal bias (requires Pro tier, otherwise null), and archived routes",
     parameters: z.object({
       goal: z.string().min(1, "goal is required"),
       context: z.string().optional(),
@@ -147,7 +147,7 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "checkpoint",
-    description: "Record phase completion with cost, correct a cost, or get current route state",
+    description: "Record phase completion with cost, correct a cost, or get current route state. Costs accumulate across calls for the same phase (not idempotent)",
     parameters: z.object({
       phase: z.string().optional(),
       actual_cost: z.number().optional(),
