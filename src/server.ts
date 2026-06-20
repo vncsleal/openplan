@@ -5,9 +5,11 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { createShellCostProbe, createTimerCostProbe } from "./adapters/cost-probe.js";
 import { createMeshSync } from "./adapters/mesh.js";
-import { getDataDir, loadConfig } from "./config.js";
+import { DEFAULT_MESH_URL, getDataDir, loadConfig } from "./config.js";
 import type { StructuredError } from "./core/domain.js";
+import { createLogger } from "./core/logger.js";
 import type { MeshSync } from "./core/ports.js";
+import { AccountResponse } from "./core/schemas.js";
 import { closeDatabase, openDatabase } from "./db/connection.js";
 import { createStore } from "./db/store.js";
 import { handleCheckpoint } from "./handlers/checkpoint-handler.js";
@@ -17,6 +19,25 @@ import { handleReview } from "./handlers/review-handler.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
+const log = createLogger("server");
+
+async function checkProTier(meshUrl: string, apiKey: string | null): Promise<boolean> {
+  if (!apiKey) return false;
+  try {
+    const acctResp = await fetch(`${meshUrl}/v1/account`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (acctResp.ok) {
+      const body = await acctResp.json();
+      const parsed = AccountResponse.parse(body);
+      return parsed.tier === "pro";
+    }
+  } catch {
+    log.debug("Account check failed, assuming Free");
+  }
+  return false;
+}
 
 export async function startServer(): Promise<void> {
   const config = loadConfig();
@@ -37,12 +58,14 @@ export async function startServer(): Promise<void> {
 
   const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createTimerCostProbe();
 
+  const meshUrl = config.meshUrl ?? DEFAULT_MESH_URL;
+
   (async () => {
     try {
       const baselines = await meshSync.fetchBaselines();
       if (baselines !== null) store.setBaselines(baselines);
     } catch {
-      // Non-fatal
+      log.debug("Initial baseline fetch failed");
     }
   })();
 
@@ -59,7 +82,7 @@ export async function startServer(): Promise<void> {
           store.setBaselines(baselines);
         }
       } catch {
-        // Background sync failures are non-fatal
+        log.warn("Background sync failed");
       }
     },
     5 * 60 * 1000,
@@ -88,7 +111,8 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "plan",
-    description: "Decompose a goal into a costed route. Returns phases with estimates, confidence intervals (requires Mesh baselines, otherwise null), evidence (hazards), personal bias (requires Pro tier, otherwise null), and archived routes",
+    description:
+      "Decompose a goal into a costed route. Returns phases with estimates, confidence intervals (requires Mesh baselines, otherwise null), evidence (hazards), personal bias (requires Pro tier, otherwise null), and archived routes",
     parameters: z.object({
       goal: z.string().min(1, "goal is required"),
       context: z.string().optional(),
@@ -104,21 +128,7 @@ export async function startServer(): Promise<void> {
         } as StructuredError);
       }
 
-      let isPro = false;
-      if (config.apiKey) {
-        try {
-          const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
-            headers: { Authorization: `Bearer ${config.apiKey}` },
-            signal: AbortSignal.timeout(3000),
-          });
-          if (acctResp.ok) {
-            const acct = (await acctResp.json()) as Record<string, unknown>;
-            isPro = acct.tier === "pro";
-          }
-        } catch {
-          // assume Free
-        }
-      }
+      const isPro = await checkProTier(meshUrl, config.apiKey);
 
       const result = handlePlan({
         goal: args.goal.trim(),
@@ -134,7 +144,7 @@ export async function startServer(): Promise<void> {
         try {
           writeFileSync(anchorPath, JSON.stringify({ project, routeId: result.id }, null, 2), "utf-8");
         } catch {
-          // Non-fatal
+          log.debug("Could not write .openplan anchor");
         }
         costProbe.start();
       }
@@ -147,7 +157,8 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "checkpoint",
-    description: "Record phase completion with cost, correct a cost, or get current route state. Costs accumulate across calls for the same phase (not idempotent)",
+    description:
+      "Record phase completion with cost, correct a cost, or get current route state. Costs accumulate across calls for the same phase (not idempotent)",
     parameters: z.object({
       phase: z.string().optional(),
       actual_cost: z.number().optional(),
@@ -181,7 +192,8 @@ export async function startServer(): Promise<void> {
 
   server.addTool({
     name: "review",
-    description: "Session retrospective with summary, deviations, accuracy, cost/path learning, diagnostics, and mesh sync status",
+    description:
+      "Session retrospective with summary, deviations, accuracy, cost/path learning, diagnostics, and mesh sync status",
     parameters: z.object({
       route_id: z.string().optional(),
       project: z.string().optional(),
@@ -219,21 +231,7 @@ export async function startServer(): Promise<void> {
     mimeType: "application/json",
     description: "Personal bias, accuracy by action, sample counts",
     async load() {
-      let isPro = false;
-      if (config.apiKey) {
-        try {
-          const acctResp = await fetch(`${config.meshUrl ?? "https://api.openplan.cc"}/v1/account`, {
-            headers: { Authorization: `Bearer ${config.apiKey}` },
-            signal: AbortSignal.timeout(3000),
-          });
-          if (acctResp.ok) {
-            const acct = (await acctResp.json()) as Record<string, unknown>;
-            isPro = acct.tier === "pro";
-          }
-        } catch {
-          // assume Free
-        }
-      }
+      const isPro = await checkProTier(meshUrl, config.apiKey);
       const resource = getProfilesResource(store, isPro);
       return { text: resource.text };
     },

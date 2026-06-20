@@ -1,4 +1,4 @@
-import { calculateDeviation, deviationLabel, hazardFromPhases } from "./costs.js";
+import { calculateDeviation, ciFromBaseline, deviationLabel, hazardFromPhases } from "./costs.js";
 import type { CheckpointResult, PlanPhase, RoutePhase, RouteState, StructuredError } from "./domain.js";
 import type { DataStore } from "./ports.js";
 
@@ -60,7 +60,7 @@ export function checkpoint(input: CheckpointInput): CheckpointResult | RouteStat
     const updatedPhases = store.getPhases(resolved);
     const updatedPhase = updatedPhases.find((p) => p.id === matchedPhase.id);
     if (!updatedPhase) return { error: { code: "INTERNAL", message: "Phase not found after update" } };
-    return buildCheckpointResult(updatedPhases, updatedPhase);
+    return buildCheckpointResult(updatedPhases, updatedPhase, store);
   }
 
   if (actualCost !== undefined) {
@@ -94,13 +94,13 @@ export function checkpoint(input: CheckpointInput): CheckpointResult | RouteStat
     const updatedPhases = store.getPhases(resolved);
     const updatedPhase = updatedPhases.find((p) => p.id === matchedPhase.id);
     if (!updatedPhase) return { error: { code: "INTERNAL", message: "Phase not found after update" } };
-    return buildCheckpointResult(updatedPhases, updatedPhase);
+    return buildCheckpointResult(updatedPhases, updatedPhase, store);
   }
 
   const updatedPhases = store.getPhases(resolved);
   const currentPhase = updatedPhases.find((p) => p.id === matchedPhase.id);
   if (!currentPhase) return { error: { code: "INTERNAL", message: "Phase not found after update" } };
-  return buildCheckpointResult(updatedPhases, currentPhase);
+  return buildCheckpointResult(updatedPhases, currentPhase, store);
 }
 
 function routeIdResolve(
@@ -128,7 +128,7 @@ function findPhaseBySubsumption(phases: RoutePhase[], labelFilter: string): Rout
   return null;
 }
 
-function buildCheckpointResult(phases: RoutePhase[], currentPhase: RoutePhase): CheckpointResult {
+function buildCheckpointResult(phases: RoutePhase[], currentPhase: RoutePhase, store?: DataStore): CheckpointResult {
   const completed = phases.filter((p) => p.status === "completed");
   const totalActual = completed.reduce((s, p) => s + (p.actualCost ?? 0), 0);
   const totalExpected = completed.reduce((s, p) => s + (p.expectedCost ?? 0), 0);
@@ -143,11 +143,27 @@ function buildCheckpointResult(phases: RoutePhase[], currentPhase: RoutePhase): 
 
   const allComplete = phases.every((p) => p.status === "completed" || p.status === "skipped");
 
+  let ci: { lo: number; hi: number } | null = null;
+  if (store) {
+    const route = store.getRoute(currentPhase.routeId);
+    if (route) {
+      const ciResult = ciFromBaseline(
+        store.getBaselines(),
+        route.goalTokens,
+        currentPhase.labelTokens,
+        currentPhase.action,
+      );
+      if (ciResult) {
+        ci = ciResult.ci;
+      }
+    }
+  }
+
   const planPhase: PlanPhase = {
     label: currentPhase.label,
     action: currentPhase.action,
     expectedCost: currentPhase.expectedCost,
-    ci: null,
+    ci,
   };
 
   const nextPlanPhase: PlanPhase | null = nextPhase

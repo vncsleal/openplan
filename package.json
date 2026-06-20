@@ -1,8 +1,10 @@
 {
   "name": "@openplan/mcp",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Waze for AI agents — plan, track, and learn from software projects.",
+  "author": "Vinicius Leal",
   "license": "MIT",
+  "bugs": "https://github.com/vncsleal/openplan/issues",
   "type": "module",
   "bin": {
     "openplan": "dist/cli.js"

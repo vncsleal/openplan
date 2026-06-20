@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.18 — 2026-06-20
+
+- **Feat:** CI/CD pipeline (GitHub Actions — lint, test, build, npm publish on tag)
+- **Feat:** Vitest config with coverage thresholds (60% branch, 65% lines)
+- **Feat:** Structured logger (`createLogger(module)`) with `[openplan:module]` prefix
+- **Fix:** All API responses validated with Zod schemas (was raw `as Record<string, unknown>`) — 40+ unsafe casts eliminated
+- **Fix:** DB connection guard prevents double-init and handle leaks; `resetDatabaseForTesting()` for clean test teardown
+- **Fix:** All empty catch blocks now log via structured logger instead of silent suppression
+- **Fix:** `checkpoint()` CI field computed from baselines via `ciFromBaseline()` (was hardcoded `null`)
+- **Fix:** Dead `lastSnapshot` / `process.cpuUsage()` code removed from timer cost probe
+- **Fix:** `DeviceAuthResponse.expires_in` made optional with default 900 (API omits the field)
+- **Fix:** `ExportCalibration.created_at` accepts `number | string` (Python API returns Unix timestamps)
+- **Fix:** `ExportCalibration.expected_cost`/`actual_cost` accept `null` (DB allows NULL)
+- **Fix:** `openplan account` subscription display restored after schema migration regression
+- **Fix:** `DEFAULT_MESH_URL` exported from config.ts — replaces 4 hardcoded URL strings
+- **Chore:** Added `author`, `bugs` fields to package.json
+- **Chore:** Added `.env.example` for telemetry service (documents 5 required env vars)
+- **Chore:** Updated `.gitignore` with `coverage/`, `*.log`, `.npmrc`
+
 ## 0.1.17 — 2026-06-20
 
 - **Feat:** `completion` command — generates bash/zsh/fish shell completion scripts

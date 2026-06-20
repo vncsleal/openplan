@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { plan } from '../src/core/planner.ts'
 import { createStore } from '../src/db/store.ts'
-import { openInMemoryDatabase } from '../src/db/connection.ts'
+import { openInMemoryDatabase, resetDatabaseForTesting } from '../src/db/connection.ts'
 import type { DataStore } from '../src/core/ports.ts'
 
 describe('planner', () => {
@@ -10,6 +10,10 @@ describe('planner', () => {
   beforeEach(() => {
     const db = openInMemoryDatabase()
     store = createStore(db, 'test-identity')
+  })
+
+  afterEach(() => {
+    resetDatabaseForTesting()
   })
 
   it('creates a route with phases for a standard implement goal', () => {

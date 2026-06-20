@@ -9,6 +9,9 @@ let db: OpenPlanDb | null = null;
 let sqlite: Database.Database | null = null;
 
 export function openDatabase(dbPath: string): OpenPlanDb {
+  if (db || sqlite) {
+    throw new Error("Database already initialized — close the existing connection first");
+  }
   sqlite = new Database(dbPath);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
@@ -19,6 +22,9 @@ export function openDatabase(dbPath: string): OpenPlanDb {
 }
 
 export function openInMemoryDatabase(): OpenPlanDb {
+  if (db || sqlite) {
+    throw new Error("Database already initialized — close the existing connection first");
+  }
   sqlite = new Database(":memory:");
   sqlite.pragma("foreign_keys = ON");
   const instance = drizzle(sqlite, { schema }) as OpenPlanDb;
@@ -38,6 +44,14 @@ export function closeDatabase(): void {
     sqlite = null;
     db = null;
   }
+}
+
+export function resetDatabaseForTesting(): void {
+  if (sqlite) {
+    sqlite.close();
+  }
+  sqlite = null;
+  db = null;
 }
 
 function runMigrations(sqlite: Database.Database): void {

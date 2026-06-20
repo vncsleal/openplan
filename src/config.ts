@@ -6,6 +6,8 @@ import { parse, stringify } from "smol-toml";
 
 type TomlDoc = Record<string, unknown>;
 
+export const DEFAULT_MESH_URL = "https://api.openplan.cc";
+
 export interface OpenPlanConfig {
   identityId: string;
   projectRoot: string;
@@ -77,7 +79,7 @@ export function loadConfig(): OpenPlanConfig {
     projectRoot: process.env.OPENPLAN_PROJECT_ROOT ?? process.cwd(),
     dataDir: getDataDir(),
     meshUrl: meshEnabled
-      ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? "https://api.openplan.cc")
+      ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? DEFAULT_MESH_URL)
       : null,
     apiKey: process.env.OPENPLAN_API_KEY ?? (meshSection?.api_key as string | undefined) ?? null,
     costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? (costProbeSection?.command as string | undefined) ?? null,
@@ -101,7 +103,7 @@ export function saveConfig(partial: Partial<OpenPlanConfig>): void {
   if (partial.meshUrl !== undefined || partial.apiKey !== undefined || partial.meshUrl === null) {
     existing.mesh = {
       ...(currentMesh ?? {}),
-      url: partial.meshUrl ?? (currentMesh?.url as string | undefined) ?? "https://api.openplan.cc",
+      url: partial.meshUrl ?? (currentMesh?.url as string | undefined) ?? DEFAULT_MESH_URL,
       api_key: partial.apiKey ?? (currentMesh?.api_key as string | undefined),
       enabled: partial.meshUrl !== null,
     };

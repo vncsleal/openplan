@@ -87,23 +87,27 @@ db/        Drizzle schema, SQLite, DataStore implementation
 
 **One rule:** Core never imports adapters or handlers. The `DataStore` port insulates core from Drizzle.
 
-## Stack
-
-- **FastMCP** framework over `@modelcontextprotocol/sdk` — Zod schemas for automatic input validation, `npx fastmcp dev` for testing
-- **SQLite** via `better-sqlite3` — local-first, fully offline
-- **Mesh API** (Python/FastAPI on Fly.io) — cross-session cost learning with MAD filter, Bayesian shrinkage, per-key rate limiting
-- **7 tables**: routes, route_phases, calibration_events, correction_events, cost_baselines, completed_sequences, schema_version
-- **Anchor file** (`.openplan`) at project root for multi-session discovery
-
 ## Development
 
 ```bash
 npm install
 npm run dev        # tsx watch
-npm test           # vitest
+npm test           # vitest (config at vitest.config.ts)
 npm run test:e2e   # end-to-end against compiled dist/
 npm run build      # tsc
-npm run lint       # biome
+npm run lint       # biome check
 ```
+
+### CI/CD
+
+GitHub Actions runs lint, test, build on every push/PR. Publish to npm happens automatically on version tags (`v*`).
+
+## Stack
+
+- **FastMCP** — MCP framework with Zod schemas for input validation
+- **SQLite** via `better-sqlite3` / Drizzle ORM — 7 tables, local-first
+- **Mesh API** (Python/FastAPI on Fly.io) — cross-session cost learning with MAD filter, Bayesian shrinkage, per-key rate limiting
+- **Structured logging** — `createLogger(module)` with `[openplan:module]` prefix
+- **Coverage** — Vitest with 60% branch / 65% line thresholds
 
 License: MIT

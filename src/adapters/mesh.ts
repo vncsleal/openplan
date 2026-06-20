@@ -1,5 +1,9 @@
 import type { CalibrationEvent, CostBaseline } from "../core/domain.js";
+import { createLogger } from "../core/logger.js";
 import type { MeshSync } from "../core/ports.js";
+import { BaselinesResponse } from "../core/schemas.js";
+
+const log = createLogger("mesh");
 
 function outcomeToMesh(outcome: CalibrationEvent["outcome"]): string {
   if (outcome === "completed") return "success";
@@ -39,7 +43,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
 
         return res.ok;
       } catch (e) {
-        console.error(`[openplan] Mesh sync failed: ${e instanceof Error ? e.message : "unknown error"}`);
+        log.warn("Mesh sync failed", e);
         return false;
       }
     },
@@ -57,12 +61,13 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         if (!res.ok) return null;
 
         const body = (await res.json()) as Record<string, unknown>;
-        const rawBaselines = (Array.isArray(body) ? body : (body.baselines as Record<string, unknown>[])) ?? [];
+        const parsed = BaselinesResponse.parse(body);
+        const rawBaselines = Array.isArray(parsed) ? parsed : parsed.baselines;
 
-        return rawBaselines.map((b: Record<string, unknown>) => ({
+        return rawBaselines.map((b) => ({
           id: crypto.randomUUID(),
           matchLevel: (b.match_level as CostBaseline["matchLevel"]) ?? "action",
-          action: (b.action as string) ?? "",
+          action: b.action ?? "",
           avgCost: (b.cost_tokens ?? b.p50 ?? 0) as number,
           ciLo: (b.p25 ?? null) as number | null,
           ciHi: (b.p75 ?? null) as number | null,
@@ -70,7 +75,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
           createdAt: new Date().toISOString(),
         }));
       } catch (e) {
-        console.error(`[openplan] Baseline fetch failed: ${e instanceof Error ? e.message : "unknown error"}`);
+        log.warn("Baseline fetch failed", e);
         return [];
       }
     },
@@ -84,7 +89,7 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         });
         return res.ok;
       } catch (e) {
-        console.error(`[openplan] Mesh unreachable: ${e instanceof Error ? e.message : "unknown error"}`);
+        log.debug("Mesh unreachable", e);
         return false;
       }
     },

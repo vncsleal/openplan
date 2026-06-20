@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { plan } from '../src/core/planner.ts'
 import { checkpoint } from '../src/core/tracker.ts'
 import { review } from '../src/core/reviewer.ts'
 import { createStore } from '../src/db/store.ts'
-import { openInMemoryDatabase } from '../src/db/connection.ts'
+import { openInMemoryDatabase, resetDatabaseForTesting } from '../src/db/connection.ts'
 import type { DataStore } from '../src/core/ports.ts'
 
 describe('reviewer', () => {
@@ -12,6 +12,10 @@ describe('reviewer', () => {
   beforeEach(() => {
     const db = openInMemoryDatabase()
     store = createStore(db, 'test-identity')
+  })
+
+  afterEach(() => {
+    resetDatabaseForTesting()
   })
 
   it('generates a review with summary and deviations', () => {

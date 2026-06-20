@@ -4,12 +4,10 @@ import type { CostProbe } from "../core/ports.js";
 
 export function createTimerCostProbe(): CostProbe {
   let startTime: number | null = null;
-  let lastSnapshot: number | null = null;
 
   return {
     start(): void {
       startTime = Date.now();
-      lastSnapshot = process.cpuUsage().user;
     },
 
     stop(): number | null {
@@ -17,7 +15,6 @@ export function createTimerCostProbe(): CostProbe {
 
       const elapsed = Date.now() - startTime;
       startTime = null;
-      lastSnapshot = null;
 
       if (elapsed < 100) return null;
 

@@ -5,13 +5,25 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import pc from "picocolors";
 import { parse, stringify } from "smol-toml";
-import { ensureDirectories, getConfigPath, getDataDir, loadConfig, saveConfig } from "./config.js";
+import { DEFAULT_MESH_URL, ensureDirectories, getConfigPath, getDataDir, loadConfig, saveConfig } from "./config.js";
+import { createLogger } from "./core/logger.js";
+import {
+  AccountResponse,
+  ApiKeyResponse,
+  DeviceAuthResponse,
+  ErrorDetailResponse,
+  ExportResponse,
+  PollAuthResponse,
+  PortalResponse,
+  SubscribeResponse,
+} from "./core/schemas.js";
 import { openDatabase } from "./db/connection.js";
 import { createStore } from "./db/store.js";
 import { startServer } from "./server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
+const log = createLogger("cli");
 
 const program = new Command();
 
@@ -23,7 +35,7 @@ program
   .option("--no-color", "Disable color output");
 
 function meshUrl(): string {
-  return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
+  return process.env.OPENPLAN_MESH_URL ?? DEFAULT_MESH_URL;
 }
 
 function isUUID(s: string): boolean {
@@ -154,14 +166,15 @@ program
         console.error(`  ${pc.red("!")} Device auth failed (${deviceResp.status}).\n`);
         process.exit(1);
       }
-      const device = (await deviceResp.json()) as Record<string, unknown>;
+      const deviceRaw = await deviceResp.json();
+      const device = DeviceAuthResponse.parse(deviceRaw);
       if (options.debug) console.error(`  ${pc.dim("[debug]")} device: ${JSON.stringify(device)}`);
 
-      const userCode = device.user_code as string;
-      const verificationUri = (device.verification_uri as string) ?? "https://github.com/login/device";
-      let interval = (device.interval as number) ?? 5;
-      const deviceCode = device.device_code as string;
-      const expiresIn = (device.expires_in as number) ?? 900;
+      const userCode = device.user_code;
+      const verificationUri = device.verification_uri;
+      let interval = device.interval;
+      const deviceCode = device.device_code;
+      const expiresIn = device.expires_in;
       const expiryMinutes = Math.floor(expiresIn / 60);
 
       console.error("");
@@ -185,7 +198,7 @@ program
           console.error(`  ${pc.dim(">")}  Code copied to clipboard`);
           console.error("");
         } catch {
-          /* clipboard unavailable */
+          log.debug("Clipboard copy failed");
         }
       }
 
@@ -196,7 +209,7 @@ program
           console.error(`  ${pc.dim(">")}  Browser opened`);
           console.error("");
         } catch {
-          /* fallback */
+          log.debug("Browser open failed, continuing with manual flow");
         }
       }
 
@@ -229,7 +242,8 @@ program
           continue;
         }
 
-        const poll = (await pollResp.json()) as Record<string, unknown>;
+        const pollRaw = await pollResp.json();
+        const poll = PollAuthResponse.parse(pollRaw);
         if (options.debug) console.error(`\n  ${pc.dim("[debug]")} poll: ${JSON.stringify(poll)}`);
 
         if (poll.access_token) {
@@ -248,10 +262,11 @@ program
             console.error(`  ${pc.red("!")} Failed to create API key.\n`);
             process.exit(1);
           }
-          const keyData = (await keyResp.json()) as Record<string, unknown>;
+          const keyRaw = await keyResp.json();
+          const keyData = ApiKeyResponse.parse(keyRaw);
           if (options.debug) console.error(`  ${pc.dim("[debug]")} key: ${JSON.stringify(keyData)}`);
 
-          saveConfig({ apiKey: keyData.api_key as string, meshUrl: base });
+          saveConfig({ apiKey: keyData.api_key, meshUrl: base });
           console.error(`  ${pc.green("*")} Authenticated! API key saved to config.\n`);
           return;
         }
@@ -273,9 +288,7 @@ program
         }
 
         process.stderr.write("\r                                                          \r");
-        console.error(
-          `  ${pc.red("!")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}\n`,
-        );
+        console.error(`  ${pc.red("!")} ${poll.error_description ?? poll.error ?? "Unknown error"}\n`);
         return;
       }
 
@@ -293,7 +306,7 @@ const COMPLETION_SCRIPT: Record<string, string> = {};
 
 COMPLETION_SCRIPT.bash = [
   "_openplan_completions() {",
-  '  local cur prev opts; COMPREPLY=()',
+  "  local cur prev opts; COMPREPLY=()",
   '  cur="${COMP_WORDS[COMP_CWORD]}"',
   '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
   '  opts="--help --json --no-color --version install auth subscribe portal account config mesh status log export help"',
@@ -341,7 +354,7 @@ program
     console.log(script.trimStart());
   });
 
-// ── doctor ────────────────────────────────────────────────────────────────────
+// ── subscribe ─────────────────────────────────────────────────────────────────
 
 program
   .command("subscribe")
@@ -361,14 +374,16 @@ program
         body: JSON.stringify({ plan: "pro", api_key: config.apiKey }),
       });
       if (!resp.ok) {
-        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+        const errRaw = await resp.json().catch(() => null);
+        const err = errRaw ? ErrorDetailResponse.parse(errRaw) : null;
         console.error(
           `  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`,
         );
         process.exit(1);
       }
-      const data = (await resp.json()) as Record<string, unknown>;
-      const url = data.checkout_url as string;
+      const dataRaw = await resp.json();
+      const data = SubscribeResponse.parse(dataRaw);
+      const url = data.checkout_url;
 
       console.error("");
       console.error(`  ${pc.bold("OpenPlan Subscription")}`);
@@ -385,7 +400,7 @@ program
           execSync(`open "${url}"`, { timeout: 3000 });
           console.error(`  ${pc.dim(">")}  Browser opened\n`);
         } catch {
-          /* fallback */
+          log.debug("Browser open failed");
         }
       }
     } catch (e) {
@@ -416,18 +431,20 @@ program
         },
       });
       if (!resp.ok) {
-        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        console.error(`  ${pc.red("!")} ${err?.detail ? err.detail : `Portal failed (${resp.status})`}\n`);
+        const errRaw = await resp.json().catch(() => null);
+        const err = errRaw ? ErrorDetailResponse.parse(errRaw) : null;
+        console.error(`  ${pc.red("!")} ${err?.detail ?? `Portal failed (${resp.status})`}\n`);
         process.exit(1);
       }
-      const data = (await resp.json()) as Record<string, unknown>;
-      const url = data.url as string;
+      const dataRaw = await resp.json();
+      const data = PortalResponse.parse(dataRaw);
+      const url = data.url;
       console.error(`  ${pc.dim(">")}  Opening billing portal...\n`);
       try {
         const { execSync } = await import("node:child_process");
         execSync(`open "${url}"`, { timeout: 3000 });
       } catch {
-        /* fallback */
+        log.debug("Browser open failed");
       }
     } catch (e) {
       console.error(`  ${pc.red("!")} Portal failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
@@ -475,7 +492,8 @@ program
           headers: { Authorization: `Bearer ${config.apiKey}` },
         });
         if (!resp.ok) {
-          const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+          const errRaw = await resp.json().catch(() => null);
+          const err = errRaw ? ErrorDetailResponse.parse(errRaw) : null;
           console.error(`  ${pc.red("!")} Delete failed: ${err?.detail ?? `HTTP ${resp.status}`}\n`);
           process.exit(1);
         }
@@ -486,8 +504,8 @@ program
       return;
     }
 
-    let subStatus: Record<string, unknown> | null = null;
     let meshReachable = false;
+    let subStatus: { tier: string; status: string } | null = null;
     if (config.apiKey) {
       try {
         const resp = await fetch(`${base}/v1/account`, {
@@ -495,11 +513,13 @@ program
           signal: AbortSignal.timeout(3000),
         });
         if (resp.ok) {
-          subStatus = (await resp.json()) as Record<string, unknown>;
+          const body = await resp.json();
+          const parsed = AccountResponse.parse(body);
+          subStatus = { tier: parsed.tier, status: parsed.status ?? "active" };
           meshReachable = true;
         }
       } catch {
-        /* Mesh unreachable */
+        log.debug("Mesh unreachable");
       }
     }
 
@@ -525,9 +545,7 @@ program
         console.error(`  ${pc.dim("-")}  Mesh: ${pc.red("unreachable")} — subscription status may be stale`);
       }
       if (subStatus) {
-        console.error(
-          `  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`,
-        );
+        console.error(`  ${pc.dim("-")}  Subscription: ${subStatus.tier} — ${subStatus.status}`);
       } else {
         console.error(`  ${pc.dim("-")}  Subscription: ${pc.dim("free (unauthenticated)")}`);
       }
@@ -572,7 +590,7 @@ program
     const dbPath = join(getDataDir(), "openplan.db");
 
     if (action === "on") {
-      saveConfig({ meshUrl: config.meshUrl ?? "https://api.openplan.cc" });
+      saveConfig({ meshUrl: DEFAULT_MESH_URL });
       console.error(`  ${pc.green("*")} Mesh sync enabled.\n`);
       return;
     }
@@ -583,7 +601,7 @@ program
         const raw = readFileSync(tomlPath, "utf-8");
         const doc = parse(raw) as Record<string, unknown>;
         const mesh = doc.mesh as Record<string, unknown> | undefined;
-        doc.mesh = { ...(mesh ?? {}), enabled: false, url: config.meshUrl ?? "https://api.openplan.cc" };
+        doc.mesh = { ...(mesh ?? {}), enabled: false, url: DEFAULT_MESH_URL };
         writeFileSync(tomlPath, stringify(doc), "utf-8");
         console.error(`  ${pc.green("*")} Mesh sync disabled.\n`);
       } catch (e) {
@@ -750,40 +768,44 @@ program
         headers: { Authorization: `Bearer ${config.apiKey}` },
       });
       if (!resp.ok) {
-        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        const detail = (err?.detail as string) ?? `HTTP ${resp.status}`;
+        const errRaw = await resp.json().catch(() => null);
+        const err = errRaw ? ErrorDetailResponse.parse(errRaw) : null;
+        const detail = err?.detail ?? `HTTP ${resp.status}`;
         console.error(`  ${pc.red("!")} Export failed: ${detail}\n`);
         process.exit(1);
       }
-      const data = (await resp.json()) as Record<string, unknown>;
+      const dataRaw = await resp.json();
+      const data = ExportResponse.parse(dataRaw);
 
       if (fmt === "csv") {
-        const calibrations = data.calibrations as Record<string, unknown>[];
+        const calibrations = data.calibrations ?? [];
         console.log("action,expected_cost,actual_cost,outcome,session_id,created_at");
         for (const c of calibrations) {
           console.log(
-            `${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`,
+            `${c.action ?? ""},${c.expected_cost ?? ""},${c.actual_cost ?? ""},${c.outcome ?? ""},${c.session_id ?? ""},${c.created_at ?? ""}`,
           );
         }
       } else if (fmt === "markdown") {
-        const summary = data.summary as Record<string, unknown>;
-        const calibrations = data.calibrations as Record<string, unknown>[];
+        const summary = data.summary;
+        const calibrations = data.calibrations ?? [];
         console.log("# OpenPlan Data Export\n");
-        console.log(`Exported at: ${new Date((data.exported_at as number) * 1000).toISOString()}`);
-        console.log(`Tier: ${data.tier}`);
+        console.log(`Exported at: ${new Date(data.exported_at * 1000).toISOString()}`);
+        console.log(`Tier: ${data.tier ?? "unknown"}`);
         console.log("\n## Summary\n");
-        console.log(`- Total calibrations: ${summary.total_calibrations}`);
+        console.log(`- Total calibrations: ${summary?.total_calibrations ?? 0}`);
         console.log("\n### Accuracy by Action\n");
         console.log("| Action | Samples | Mean Deviation | MAPE |");
         console.log("|--------|---------|---------------|------|");
-        const accuracy = summary.accuracy_by_action as Record<string, unknown>[];
+        const accuracy = summary?.accuracy_by_action ?? [];
         for (const a of accuracy) {
-          console.log(`| ${a.action} | ${a.sample_count} | ${a.mean_deviation ?? "-"} | ${a.mape ?? "-"}% |`);
+          console.log(
+            `| ${a.action ?? ""} | ${a.sample_count ?? 0} | ${a.mean_deviation ?? "-"} | ${a.mape ?? "-"}% |`,
+          );
         }
         console.log("\n## Calibration Events\n");
         for (const c of calibrations) {
           console.log(
-            `- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`,
+            `- ${c.created_at ?? ""} | ${c.action ?? ""} | actual: ${c.actual_cost ?? ""} | expected: ${c.expected_cost ?? "?"} | ${c.outcome ?? ""}`,
           );
         }
       } else {
@@ -843,7 +865,9 @@ program
       const dbPath = join(getDataDir(), "openplan.db");
       if (!existsSync(dbPath)) return "not found — run a plan() to create it";
       const db = openDatabase(dbPath);
-      const row = db.$client.prepare("SELECT COUNT(*) AS cnt FROM calibration_events").get() as { cnt: number | null } | undefined;
+      const row = db.$client.prepare("SELECT COUNT(*) AS cnt FROM calibration_events").get() as
+        | { cnt: number | null }
+        | undefined;
       if (row && typeof row.cnt === "number") {
         console.error(`  ${pc.green("*")} OK — ${row.cnt} calibration events`);
       }
@@ -870,9 +894,7 @@ program
       });
       if (resp.status === 404) return "invalid or revoked — run `openplan auth` again";
       if (!resp.ok) return `unreachable (HTTP ${resp.status})`;
-      const data = (await resp.json()) as Record<string, unknown>;
-      if (data.tier === "pro") return null;
-      return null; // free tier is valid
+      return null;
     });
 
     await check("Subscription", async () => {
@@ -882,20 +904,17 @@ program
         signal: AbortSignal.timeout(5000),
       });
       if (!resp.ok) return "unreachable";
-      const data = (await resp.json()) as Record<string, unknown>;
-      if (data.tier === "pro") {
-        const ends = data.current_period_end
-          ? ` (expires ${new Date((data.current_period_end as number) * 1000).toISOString().slice(0, 10)})`
-          : "";
-        console.error(`  ${pc.green("*")} Pro${ends}`);
+      const body = await resp.json();
+      const parsed = AccountResponse.parse(body);
+      if (parsed.tier === "pro") {
+        console.error(`  ${pc.green("*")} Pro`);
       } else {
         console.error(`  ${pc.green("*")} Free`);
       }
-      return "skip"; // already printed inline
+      return "skip";
     });
 
     await check("Disk space", async () => {
-      // macOS df reports in 512-byte blocks
       const { execSync } = await import("node:child_process");
       const out = execSync("df -k /tmp").toString().trim().split("\n").pop()?.split(/\s+/);
       if (out?.[3]) {

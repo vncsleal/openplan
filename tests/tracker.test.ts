@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { plan } from '../src/core/planner.ts'
 import { checkpoint } from '../src/core/tracker.ts'
 import { createStore } from '../src/db/store.ts'
-import { openInMemoryDatabase } from '../src/db/connection.ts'
+import { openInMemoryDatabase, resetDatabaseForTesting } from '../src/db/connection.ts'
 import type { DataStore } from '../src/core/ports.ts'
+import type { CheckpointResult } from '../src/core/domain.ts'
 
 describe('tracker', () => {
   let store: DataStore
@@ -11,6 +12,10 @@ describe('tracker', () => {
   beforeEach(() => {
     const db = openInMemoryDatabase()
     store = createStore(db, 'test-identity')
+  })
+
+  afterEach(() => {
+    resetDatabaseForTesting()
   })
 
   it('records a checkpoint and returns deviation', () => {
