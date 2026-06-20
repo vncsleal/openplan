@@ -485,12 +485,28 @@ async def delete_account(request: Request) -> dict[str, bool]:
         raise HTTPException(status_code=401, detail="Missing API key")
 
     key_row = conn.execute(
-        "SELECT key FROM api_keys WHERE key = ? AND is_active = 1", (auth,)
+        "SELECT user_id, tier FROM api_keys WHERE key = ? AND is_active = 1", (auth,)
     ).fetchone()
     if not key_row:
         raise HTTPException(
             status_code=404, detail="API key not found or already inactive"
         )
+
+    # Cancel Stripe subscription if Pro
+    if key_row["tier"] == "pro" and STRIPE_SECRET_KEY:
+        import stripe as stripe_sdk
+
+        stripe_sdk.api_key = STRIPE_SECRET_KEY
+        sub = get_subscription(conn, key_row["user_id"])
+        if sub and sub.get("stripe_subscription_id"):
+            try:
+                stripe_sdk.Subscription.cancel(sub["stripe_subscription_id"])
+                _log.info(
+                    "Subscription %s canceled via account delete",
+                    sub["stripe_subscription_id"][:8],
+                )
+            except stripe_sdk.error.StripeError as e:
+                _log.warning("Failed to cancel subscription: %s", e)
 
     # Delete all calibration events for this API key
     conn.execute("DELETE FROM calibration_events WHERE api_key = ?", (auth,))

@@ -26,6 +26,10 @@ function meshUrl(): string {
   return process.env.OPENPLAN_MESH_URL ?? "https://api.openplan.cc";
 }
 
+function isUUID(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 // ── install ───────────────────────────────────────────────────────────────────
 
 program
@@ -61,7 +65,6 @@ program
     if (hasClaude) detected.push("Claude Desktop");
     console.error(`  ${pc.dim(">")} Detected: ${detected.join(", ")}`);
 
-    // Ask for consent before writing configs (skip in CI)
     if (process.stdout.isTTY && !process.env.CI) {
       const { createInterface } = await import("node:readline");
       const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -89,9 +92,8 @@ program
             console.error(`  ${pc.yellow(">")} OpenPlan already configured in OpenCode`);
           }
         } catch (e) {
-          console.error(
-            `  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`,
-          );
+          console.error(`  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`);
+          process.exit(1);
         }
       }
       if (client === "Claude Desktop") {
@@ -107,9 +109,8 @@ program
             console.error(`  ${pc.yellow(">")} OpenPlan already configured in Claude Desktop`);
           }
         } catch (e) {
-          console.error(
-            `  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`,
-          );
+          console.error(`  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`);
+          process.exit(1);
         }
       }
     }
@@ -145,7 +146,10 @@ program
 
     try {
       const deviceResp = await fetch(`${base}/v1/auth/device`, { method: "POST" });
-      if (!deviceResp.ok) throw new Error(`Device auth failed (${deviceResp.status})`);
+      if (!deviceResp.ok) {
+        console.error(`  ${pc.red("!")} Device auth failed (${deviceResp.status}).\n`);
+        process.exit(1);
+      }
       const device = (await deviceResp.json()) as Record<string, unknown>;
       if (options.debug) console.error(`  ${pc.dim("[debug]")} device: ${JSON.stringify(device)}`);
 
@@ -236,7 +240,10 @@ program
             },
             body: JSON.stringify({ tier: "free" }),
           });
-          if (!keyResp.ok) throw new Error("Failed to create API key");
+          if (!keyResp.ok) {
+            console.error(`  ${pc.red("!")} Failed to create API key.\n`);
+            process.exit(1);
+          }
           const keyData = (await keyResp.json()) as Record<string, unknown>;
           if (options.debug) console.error(`  ${pc.dim("[debug]")} key: ${JSON.stringify(keyData)}`);
 
@@ -252,28 +259,27 @@ program
         }
         if (poll.error === "expired_token") {
           process.stderr.write("\r                                                          \r");
-          process.stderr.write(`  ${pc.red("!")} Session expired.\n`);
           console.error(`  ${pc.red("!")} Session expired. Run \`openplan auth\` again.\n`);
           return;
         }
         if (poll.error === "access_denied") {
           process.stderr.write("\r                                                          \r");
-          process.stderr.write(`  ${pc.red("!")} Authorization denied.\n`);
+          console.error(`  ${pc.red("!")} Authorization denied.\n`);
           return;
         }
 
         process.stderr.write("\r                                                          \r");
-        process.stderr.write(
+        console.error(
           `  ${pc.red("!")} ${(poll.error_description as string) ?? (poll.error as string) ?? "Unknown error"}\n`,
         );
         return;
       }
 
       process.stderr.write("\r                                                          \r");
-      process.stderr.write(`  ${pc.red("!")} Timed out.\n`);
       console.error(`  ${pc.red("!")} Timed out after ${expiryMinutes} minutes. Run \`openplan auth\` again.\n`);
     } catch (e) {
       console.error(`  ${pc.red("!")} ${e instanceof Error ? e.message : "unknown error"}\n`);
+      process.exit(1);
     }
   });
 
@@ -281,9 +287,8 @@ program
 
 program
   .command("subscribe")
-  .description("Manage subscription (Stripe Checkout)")
-  .argument("[plan]", "Plan: pro (default) or enterprise", "pro")
-  .action(async (plan: string) => {
+  .description("Subscribe to Pro (Stripe Checkout)")
+  .action(async () => {
     const config = loadConfig();
     if (!config.apiKey) {
       console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
@@ -291,49 +296,16 @@ program
     }
 
     const base = meshUrl();
-
-    // Manage existing subscription (Stripe Customer Portal)
-    if (plan === "manage") {
-      try {
-        const resp = await fetch(`${base}/v1/manage`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.apiKey}`,
-          },
-        });
-        if (!resp.ok) {
-          const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-          console.error(`  ${pc.red("!")} ${err?.detail ? err.detail : `Manage failed (${resp.status})`}\n`);
-          return;
-        }
-        const data = (await resp.json()) as Record<string, unknown>;
-        const url = data.url as string;
-        console.error(`  ${pc.dim(">")}  Opening billing portal...\n`);
-        try {
-          const { execSync } = await import("node:child_process");
-          execSync(`open "${url}"`, { timeout: 3000 });
-        } catch {
-          /* fallback */
-        }
-      } catch (e) {
-        console.error(`  ${pc.red("!")} Manage failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
-      }
-      return;
-    }
-
     try {
       const resp = await fetch(`${base}/v1/subscribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, api_key: config.apiKey }),
+        body: JSON.stringify({ plan: "pro", api_key: config.apiKey }),
       });
       if (!resp.ok) {
         const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        console.error(
-          `  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`,
-        );
-        return;
+        console.error(`  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`);
+        process.exit(1);
       }
       const data = (await resp.json()) as Record<string, unknown>;
       const url = data.checkout_url as string;
@@ -358,6 +330,48 @@ program
       }
     } catch (e) {
       console.error(`  ${pc.red("!")} Subscribe failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      process.exit(1);
+    }
+  });
+
+// ── portal ────────────────────────────────────────────────────────────────────
+
+program
+  .command("portal")
+  .description("Manage subscription (Stripe Customer Portal)")
+  .action(async () => {
+    const config = loadConfig();
+    if (!config.apiKey) {
+      console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
+      process.exit(1);
+    }
+
+    const base = meshUrl();
+    try {
+      const resp = await fetch(`${base}/v1/manage`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+      });
+      if (!resp.ok) {
+        const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+        console.error(`  ${pc.red("!")} ${err?.detail ? err.detail : `Portal failed (${resp.status})`}\n`);
+        process.exit(1);
+      }
+      const data = (await resp.json()) as Record<string, unknown>;
+      const url = data.url as string;
+      console.error(`  ${pc.dim(">")}  Opening billing portal...\n`);
+      try {
+        const { execSync } = await import("node:child_process");
+        execSync(`open "${url}"`, { timeout: 3000 });
+      } catch {
+        /* fallback */
+      }
+    } catch (e) {
+      console.error(`  ${pc.red("!")} Portal failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      process.exit(1);
     }
   });
 
@@ -365,7 +379,7 @@ program
 
 program
   .command("account")
-  .description("Account info and subscription status")
+  .description("Account info, subscription status, or delete")
   .argument("[action]", "Action: delete")
   .action(async (action?: string) => {
     const config = loadConfig();
@@ -377,16 +391,32 @@ program
         console.error(`  ${pc.yellow("!")} Not authenticated. Run \`openplan auth\` first.\n`);
         return;
       }
-      console.error(
-        `  ${pc.yellow("!")} This will delete all your calibration data from the Mesh and revoke your API key.`,
-      );
+
+      console.error(`  ${pc.red("!")} This will permanently delete all your calibration data from the Mesh`);
+      console.error(`    and revoke your API key. This cannot be undone.`);
+      console.error("");
+
+      if (process.stdout.isTTY && !process.env.CI) {
+        const { createInterface } = await import("node:readline");
+        const rl = createInterface({ input: process.stdin, output: process.stderr });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(`  ${pc.dim(">")} Are you sure? [y/N] `, resolve);
+        });
+        rl.close();
+        if (answer.trim().toLowerCase() !== "y") {
+          console.error(`  ${pc.yellow(">")} Account deletion cancelled.\n`);
+          return;
+        }
+      }
+
       try {
         const resp = await fetch(`${base}/v1/account/delete`, {
           method: "POST",
           headers: { Authorization: `Bearer ${config.apiKey}` },
         });
         if (!resp.ok) {
-          console.error(`  ${pc.red("!")} Delete failed (${resp.status})\n`);
+          const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+          console.error(`  ${pc.red("!")} Delete failed: ${err?.detail ?? `HTTP ${resp.status}`}\n`);
           return;
         }
         console.error(`  ${pc.green("*")} Account data deleted from Mesh.\n`);
@@ -404,7 +434,7 @@ program
         });
         if (resp.ok) subStatus = (await resp.json()) as Record<string, unknown>;
       } catch {
-        /* Mesh unreachable — show local-only info */
+        /* Mesh unreachable */
       }
     }
 
@@ -426,9 +456,7 @@ program
       console.error(`  ${pc.dim("-")}  Data: ${config.dataDir}`);
       console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
       if (subStatus) {
-        console.error(
-          `  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`,
-        );
+        console.error(`  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`);
       } else {
         console.error(`  ${pc.dim("-")}  Subscription: ${pc.dim("free (unauthenticated)")}`);
       }
@@ -453,9 +481,7 @@ program
         console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
         console.error(`  ${pc.dim("-")}  Mesh: ${config.meshUrl ? pc.green("enabled") : pc.dim("disabled")}`);
         console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("none")}`);
-        console.error(
-          `  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`,
-        );
+        console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
         console.error(`  ${pc.dim("-")}  Cost Probe: ${config.costProbeCommand ?? pc.dim("not configured")}`);
         console.error("");
       }
@@ -489,6 +515,7 @@ program
         console.error(`  ${pc.green("*")} Mesh sync disabled.\n`);
       } catch (e) {
         console.error(`  ${pc.red("!")} Failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+        process.exit(1);
       }
       return;
     }
@@ -503,11 +530,16 @@ program
       pending = store.getUnsyncedCalibrationEvents().length;
       synced = store.getCalibrationEvents().length - pending;
     }
-    console.error(`  ${pc.dim("-")}  Mesh: ${meshEnabled ? pc.green("enabled") : pc.red("disabled")}`);
-    console.error(`  ${pc.dim("-")}  URL: ${config.meshUrl ?? pc.dim("none")}`);
-    console.error(`  ${pc.dim("-")}  Pending: ${pending}`);
-    console.error(`  ${pc.dim("-")}  Synced: ${synced}`);
-    console.error("");
+
+    if (program.opts().json) {
+      console.log(JSON.stringify({ enabled: meshEnabled, url: config.meshUrl, pending, synced }, null, 2));
+    } else {
+      console.error(`  ${pc.dim("-")}  Mesh: ${meshEnabled ? pc.green("enabled") : pc.red("disabled")}`);
+      console.error(`  ${pc.dim("-")}  URL: ${config.meshUrl ?? pc.dim("none")}`);
+      console.error(`  ${pc.dim("-")}  Pending: ${pending}`);
+      console.error(`  ${pc.dim("-")}  Synced: ${synced}`);
+      console.error("");
+    }
   });
 
 // ── status ───────────────────────────────────────────────────────────────────
@@ -547,9 +579,9 @@ program
 
 program
   .command("log")
-  .description("Show checkpoint trail for a route or project")
-  .argument("[route-or-project]", "Route ID or project name")
-  .action((routeOrProject?: string) => {
+  .description("Show checkpoint trail (optionally filtered by route ID)")
+  .argument("[route-id]", "Route ID to filter by")
+  .action((routeId?: string) => {
     const config = loadConfig();
     const dbPath = join(getDataDir(), "openplan.db");
     if (!existsSync(dbPath)) {
@@ -558,7 +590,8 @@ program
     }
     const db = openDatabase(dbPath);
     const store = createStore(db, config.identityId);
-    const events = store.getCalibrationEvents();
+
+    const events = routeId ? store.getCalibrationEventsForRoute(routeId) : store.getCalibrationEvents();
 
     if (program.opts().json) {
       console.log(JSON.stringify(events, null, 2));
@@ -588,43 +621,41 @@ program
     const fmt = options.format || "json";
 
     if (!config.apiKey) {
-      // Local-only export
+      // Local-only export (JSON only)
       const dbPath = join(getDataDir(), "openplan.db");
       if (!existsSync(dbPath)) {
         console.error(`  ${pc.dim("-")}  No data found.`);
         return;
       }
+      if (fmt !== "json") {
+        console.error(`  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`);
+        return;
+      }
       const db = openDatabase(dbPath);
       const store = createStore(db, config.identityId);
-      const routes = options.project
+
+      const allRoutes = options.project
         ? store.getRoutesForProject(options.project)
-        : store
-            .getCalibrationEvents()
-            .reduce((acc: string[], e) => {
-              if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
-              return acc;
-            }, [])
-            .map((id) => store.getRoute(id))
-            .filter(Boolean);
-      if (fmt === "json") {
-        const data = {
-          exported_at: new Date().toISOString(),
-          routes: options.project
-            ? store.getRoutesForProject(options.project).map((r) => ({
-                project: r.project,
-                goal: r.goal,
-                status: r.status,
-                phases: store.getPhases(r.id),
-              }))
-            : [],
-          calibrations: store.getCalibrationEvents(),
-        };
-        console.log(JSON.stringify(data, null, 2));
-      } else {
-        console.error(
-          `  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`,
-        );
+        : store.getCalibrationEvents().reduce((acc: string[], e) => {
+            if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
+            return acc;
+          }, []).map((id) => store.getRoute(id)).filter(Boolean) as NonNullable<ReturnType<typeof store.getRoute>>[];
+
+      if (allRoutes.length === 0) {
+        console.error(`  ${pc.yellow("!")} No routes found for export.\n`);
+        return;
       }
+
+      console.log(JSON.stringify({
+        exported_at: new Date().toISOString(),
+        routes: allRoutes.map((r) => ({
+          project: r.project,
+          goal: r.goal,
+          status: r.status,
+          phases: store.getPhases(r.id),
+        })),
+        calibrations: store.getCalibrationEvents(),
+      }, null, 2));
       return;
     }
 
@@ -637,7 +668,7 @@ program
         const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
         const detail = (err?.detail as string) ?? `HTTP ${resp.status}`;
         console.error(`  ${pc.red("!")} Export failed: ${detail}\n`);
-        return;
+        process.exit(1);
       }
       const data = (await resp.json()) as Record<string, unknown>;
 
@@ -645,9 +676,7 @@ program
         const calibrations = data.calibrations as Record<string, unknown>[];
         console.log("action,expected_cost,actual_cost,outcome,session_id,created_at");
         for (const c of calibrations) {
-          console.log(
-            `${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`,
-          );
+          console.log(`${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`);
         }
       } else if (fmt === "markdown") {
         const summary = data.summary as Record<string, unknown>;
@@ -666,15 +695,14 @@ program
         }
         console.log("\n## Calibration Events\n");
         for (const c of calibrations) {
-          console.log(
-            `- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`,
-          );
+          console.log(`- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`);
         }
       } else {
         console.log(JSON.stringify(data, null, 2));
       }
     } catch (e) {
       console.error(`  ${pc.red("!")} Export failed: ${e instanceof Error ? e.message : "unknown error"}\n`);
+      process.exit(1);
     }
   });
 
@@ -701,9 +729,7 @@ if (isHelp) {
   program.parse(process.argv);
 } else {
   startServer().catch((e) => {
-    console.error(
-      `${pc.red("!")} Failed to start OpenPlan MCP server: ${e instanceof Error ? e.message : "unknown error"}`,
-    );
+    console.error(`${pc.red("!")} Failed to start OpenPlan MCP server: ${e instanceof Error ? e.message : "unknown error"}`);
     process.exit(1);
   });
 }
