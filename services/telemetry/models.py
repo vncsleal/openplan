@@ -21,7 +21,9 @@ class CalibrationEvent(BaseModel):
 
 
 class TelemetryBatch(BaseModel):
-    events: list[CalibrationEvent]
+    events: list[CalibrationEvent] = Field(
+        max_length=50, description="Up to 50 events per batch"
+    )
 
 
 class Baseline(BaseModel):

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 v1 = APIRouter(prefix="/v1")
@@ -48,6 +48,23 @@ VERSION = "0.1.0"
 conn: Any = None
 
 
+def _client_ip(request: Request) -> str:
+    """Get the real client IP behind Cloudflare proxy."""
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    client = request.client
+    return client.host if client else "unknown"
+
+
+ANON_CHECKPOINT_WINDOW = 60  # seconds
+ANON_CHECKPOINT_MAX = 50  # max events per window per IP
+DEFAULT_DAILY_LIMIT = 100
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global conn
@@ -69,6 +86,24 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Limit request body to 1MB to prevent abuse
+MAX_BODY_SIZE = 1_048_576
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH"):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > MAX_BODY_SIZE:
+            return Response(
+                status_code=413,
+                content='{"error":"Request too large"}',
+                media_type="application/json",
+            )
+    return await call_next(request)
+
+
 app.include_router(v1)
 
 
@@ -94,8 +129,24 @@ async def post_telemetry(batch: TelemetryBatch, request: Request) -> dict[str, A
     if not api_key:
         api_key = request.query_params.get("api_key", "")
 
-    # Per-key rate limiting: if one identity produces >30% of calibrations
-    # in the sliding 24h window, quarantine that key with 0.5 weight
+    # Rate limit anonymous checkpoint submissions per IP
+    if not api_key:
+        ip = _client_ip(request)
+        anon_key = f"anon_chk:{ip}"
+        current = get_rate_limit(conn, anon_key, window_seconds=ANON_CHECKPOINT_WINDOW)
+        batch_count = len(batch.events)
+        if current + batch_count > ANON_CHECKPOINT_MAX:
+            return {
+                "ok": False,
+                "accepted": 0,
+                "error": "Rate limited. Max 50 events per 60 seconds anonymously. Authenticate for higher limits.",
+            }
+        increment_rate_limit(
+            conn, anon_key, window_seconds=ANON_CHECKPOINT_WINDOW, count=batch_count
+        )
+
+    # Per-key quarantine: if one identity produces >30% of calibrations
+    # in the sliding 24h window, quarantine with 0.5 weight
     if api_key:
         ratio = get_identity_volume_ratio(conn, api_key)
         weight = 0.5 if ratio > 0.3 else 1.0
@@ -141,13 +192,14 @@ async def calibration(request: Request) -> CalibrationResponse:
     else:
         tier = ""
     if tier != "pro":
-        current = get_rate_limit(conn, api_key or "anonymous", window_seconds=86400)
+        rate_key = api_key if api_key else f"anon_bl:{_client_ip(request)}"
+        current = get_rate_limit(conn, rate_key, window_seconds=86400)
         if current >= DEFAULT_DAILY_LIMIT:
             raise HTTPException(
                 status_code=429,
                 detail="Daily baseline limit reached (100/day). Upgrade to Pro for unlimited.",
             )
-        increment_rate_limit(conn, api_key or "anonymous", window_seconds=86400)
+        increment_rate_limit(conn, rate_key, window_seconds=86400)
     baselines = get_calibration(conn)
     return CalibrationResponse(baselines=[Baseline(**b) for b in baselines])
 

@@ -426,13 +426,15 @@ def get_rate_limit(conn: Any, api_key: str, window_seconds: int = 60) -> int:
     return int(row["count"]) if row else 0
 
 
-def increment_rate_limit(conn: Any, api_key: str, window_seconds: int = 60) -> None:
+def increment_rate_limit(
+    conn: Any, api_key: str, window_seconds: int = 60, count: int = 1
+) -> None:
     now = time.time()
     window_start = math.floor(now / window_seconds) * window_seconds
     conn.execute(
         "INSERT OR REPLACE INTO rate_limits (api_key, window_start, count) "
-        "VALUES (?, ?, COALESCE((SELECT count + 1 FROM rate_limits WHERE api_key = ? AND window_start = ?), 1))",
-        (api_key, window_start, api_key, window_start),
+        "VALUES (?, ?, COALESCE((SELECT count + ? FROM rate_limits WHERE api_key = ? AND window_start = ?), ?))",
+        (api_key, window_start, count, api_key, window_start, count),
     )
 
 
