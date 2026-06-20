@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.17 — 2026-06-20
+
+- **Feat:** `completion` command — generates bash/zsh/fish shell completion scripts
+- **Feat:** `doctor` command — system health diagnostics (Node version, config, SQLite, identity, Mesh, API key, subscription, disk space)
+- **Feat:** `gitleaks` pre-commit hook — prevents accidental secret leakage
+- **Fix:** Tool descriptions now clarify `personalBias: null` (Free tier) and cumulative cost semantics
+- **Fix:** `account delete` now confirms via `[y/N]` prompt and cancels Stripe subscription
+- **Fix:** `log` argument now actually filters by route ID (was previously ignored)
+- **Fix:** Standardized exit codes — all error paths use `process.exit(1)`
+- **Fix:** Added `--json` support to `mesh` command
+
 ## 0.1.16 — 2026-06-19
 
 - **Docs:** Update tool descriptions to mention personal bias, archived routes, mesh sync status
