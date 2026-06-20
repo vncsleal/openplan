@@ -62,16 +62,19 @@ Or run `openplan install` to auto-detect and configure both.
 openplan                 # Start MCP server (stdio mode)
 openplan install         # Auto-detect and install in MCP clients
 openplan auth            # Authenticate with Mesh via GitHub OAuth
-openplan subscribe       # Stripe Checkout for Pro subscription
+openplan subscribe       # Subscribe to Pro (Stripe Checkout)
+openplan portal          # Manage subscription (Stripe Customer Portal)
 openplan account         # Show identity, API key, subscription
-openplan config show     # View current configuration
+openplan config          # View current configuration
 openplan mesh [on|off]   # Show or toggle Mesh sync
 openplan status          # List routes for a project
 openplan log             # Show checkpoint trail
 openplan export          # Export calibration data (Pro)
+openplan completion      # Generate shell completion script
+openplan doctor          # Check system health and diagnose issues
 ```
 
-Use `--json` on `account`, `config`, `status`, `log` for structured output. Auth supports `--no-browser`, `--clipboard`, `--with-token <key>`, and `--debug`.
+Use `--json` on `account`, `config`, `status`, `log`, `mesh` for structured output. Auth supports `--no-browser`, `--clipboard`, `--with-token <key>`, and `--debug`.
 
 ## Architecture
 
