@@ -92,7 +92,9 @@ program
             console.error(`  ${pc.yellow(">")} OpenPlan already configured in OpenCode`);
           }
         } catch (e) {
-          console.error(`  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`);
+          console.error(
+            `  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
           process.exit(1);
         }
       }
@@ -109,7 +111,9 @@ program
             console.error(`  ${pc.yellow(">")} OpenPlan already configured in Claude Desktop`);
           }
         } catch (e) {
-          console.error(`  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`);
+          console.error(
+            `  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
           process.exit(1);
         }
       }
@@ -304,7 +308,9 @@ program
       });
       if (!resp.ok) {
         const err = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        console.error(`  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`);
+        console.error(
+          `  ${pc.red("!")} ${err?.detail ? `Subscribe failed: ${err.detail}` : `Subscribe failed (${resp.status})`}\n`,
+        );
         process.exit(1);
       }
       const data = (await resp.json()) as Record<string, unknown>;
@@ -393,7 +399,7 @@ program
       }
 
       console.error(`  ${pc.red("!")} This will permanently delete all your calibration data from the Mesh`);
-      console.error(`    and revoke your API key. This cannot be undone.`);
+      console.error("    and revoke your API key. This cannot be undone.");
       console.error("");
 
       if (process.stdout.isTTY && !process.env.CI) {
@@ -427,12 +433,17 @@ program
     }
 
     let subStatus: Record<string, unknown> | null = null;
+    let meshReachable = false;
     if (config.apiKey) {
       try {
         const resp = await fetch(`${base}/v1/account`, {
           headers: { Authorization: `Bearer ${config.apiKey}` },
+          signal: AbortSignal.timeout(3000),
         });
-        if (resp.ok) subStatus = (await resp.json()) as Record<string, unknown>;
+        if (resp.ok) {
+          subStatus = (await resp.json()) as Record<string, unknown>;
+          meshReachable = true;
+        }
       } catch {
         /* Mesh unreachable */
       }
@@ -445,6 +456,7 @@ program
             identityId: config.identityId,
             dataDir: config.dataDir,
             apiKey: config.apiKey ? "configured" : null,
+            meshReachable,
             subscription: subStatus,
           },
           null,
@@ -455,8 +467,13 @@ program
       console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
       console.error(`  ${pc.dim("-")}  Data: ${config.dataDir}`);
       console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
+      if (!meshReachable && config.apiKey) {
+        console.error(`  ${pc.dim("-")}  Mesh: ${pc.red("unreachable")} — subscription status may be stale`);
+      }
       if (subStatus) {
-        console.error(`  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`);
+        console.error(
+          `  ${pc.dim("-")}  Subscription: ${(subStatus.tier as string) ?? "free"} — ${subStatus.status as string}`,
+        );
       } else {
         console.error(`  ${pc.dim("-")}  Subscription: ${pc.dim("free (unauthenticated)")}`);
       }
@@ -468,23 +485,25 @@ program
 
 program
   .command("config")
-  .description("Display or modify configuration")
+  .description("Display configuration")
   .argument("[action]", "Action: show")
   .action((action?: string) => {
-    if (action === "show" || !action) {
-      const config = loadConfig();
-      if (program.opts().json) {
-        console.log(JSON.stringify(config, null, 2));
-      } else {
-        console.error(`  ${pc.dim("-")}  Config file: ${getConfigPath()}`);
-        console.error(`  ${pc.dim("-")}  Data directory: ${getDataDir()}`);
-        console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
-        console.error(`  ${pc.dim("-")}  Mesh: ${config.meshUrl ? pc.green("enabled") : pc.dim("disabled")}`);
-        console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("none")}`);
-        console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
-        console.error(`  ${pc.dim("-")}  Cost Probe: ${config.costProbeCommand ?? pc.dim("not configured")}`);
-        console.error("");
-      }
+    if (action && action !== "show") {
+      console.error(`  ${pc.red("!")} Unknown action "${action}". Use \`openplan config show\`.\n`);
+      process.exit(1);
+    }
+    const config = loadConfig();
+    if (program.opts().json) {
+      console.log(JSON.stringify(config, null, 2));
+    } else {
+      console.error(`  ${pc.dim("-")}  Config file: ${getConfigPath()}`);
+      console.error(`  ${pc.dim("-")}  Data directory: ${getDataDir()}`);
+      console.error(`  ${pc.dim("-")}  Identity: ${config.identityId}`);
+      console.error(`  ${pc.dim("-")}  Mesh: ${config.meshUrl ? pc.green("enabled") : pc.dim("disabled")}`);
+      console.error(`  ${pc.dim("-")}  Mesh URL: ${config.meshUrl ?? pc.dim("none")}`);
+      console.error(`  ${pc.dim("-")}  API Key: ${config.apiKey ? pc.green("configured") : pc.dim("not configured")}`);
+      console.error(`  ${pc.dim("-")}  Cost Probe: ${config.costProbeCommand ?? pc.dim("not configured")}`);
+      console.error("");
     }
   });
 
@@ -628,7 +647,9 @@ program
         return;
       }
       if (fmt !== "json") {
-        console.error(`  ${pc.yellow("!")} Local export supports --format json only. Connect to Mesh for CSV/Markdown.\n`);
+        console.error(
+          `  ${pc.yellow("!")} Local export supports --format json only. Run \`openplan auth\` to connect to Mesh for CSV/Markdown.\n`,
+        );
         return;
       }
       const db = openDatabase(dbPath);
@@ -636,26 +657,36 @@ program
 
       const allRoutes = options.project
         ? store.getRoutesForProject(options.project)
-        : store.getCalibrationEvents().reduce((acc: string[], e) => {
-            if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
-            return acc;
-          }, []).map((id) => store.getRoute(id)).filter(Boolean) as NonNullable<ReturnType<typeof store.getRoute>>[];
+        : (store
+            .getCalibrationEvents()
+            .reduce((acc: string[], e) => {
+              if (e.routeId && !acc.includes(e.routeId)) acc.push(e.routeId);
+              return acc;
+            }, [])
+            .map((id) => store.getRoute(id))
+            .filter(Boolean) as NonNullable<ReturnType<typeof store.getRoute>>[]);
 
       if (allRoutes.length === 0) {
         console.error(`  ${pc.yellow("!")} No routes found for export.\n`);
         return;
       }
 
-      console.log(JSON.stringify({
-        exported_at: new Date().toISOString(),
-        routes: allRoutes.map((r) => ({
-          project: r.project,
-          goal: r.goal,
-          status: r.status,
-          phases: store.getPhases(r.id),
-        })),
-        calibrations: store.getCalibrationEvents(),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            exported_at: new Date().toISOString(),
+            routes: allRoutes.map((r) => ({
+              project: r.project,
+              goal: r.goal,
+              status: r.status,
+              phases: store.getPhases(r.id),
+            })),
+            calibrations: store.getCalibrationEvents(),
+          },
+          null,
+          2,
+        ),
+      );
       return;
     }
 
@@ -676,7 +707,9 @@ program
         const calibrations = data.calibrations as Record<string, unknown>[];
         console.log("action,expected_cost,actual_cost,outcome,session_id,created_at");
         for (const c of calibrations) {
-          console.log(`${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`);
+          console.log(
+            `${c.action},${c.expected_cost ?? ""},${c.actual_cost},${c.outcome},${c.session_id ?? ""},${c.created_at ?? ""}`,
+          );
         }
       } else if (fmt === "markdown") {
         const summary = data.summary as Record<string, unknown>;
@@ -695,7 +728,9 @@ program
         }
         console.log("\n## Calibration Events\n");
         for (const c of calibrations) {
-          console.log(`- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`);
+          console.log(
+            `- ${c.created_at} | ${c.action} | actual: ${c.actual_cost} | expected: ${c.expected_cost ?? "?"} | ${c.outcome}`,
+          );
         }
       } else {
         console.log(JSON.stringify(data, null, 2));
@@ -729,7 +764,9 @@ if (isHelp) {
   program.parse(process.argv);
 } else {
   startServer().catch((e) => {
-    console.error(`${pc.red("!")} Failed to start OpenPlan MCP server: ${e instanceof Error ? e.message : "unknown error"}`);
+    console.error(
+      `${pc.red("!")} Failed to start OpenPlan MCP server: ${e instanceof Error ? e.message : "unknown error"}`,
+    );
     process.exit(1);
   });
 }

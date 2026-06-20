@@ -22,4 +22,4 @@ Use `openplan` tools proactively for any non-trivial project. Every call improve
 
 1. Core never imports shell. Handlers wire adapters into core.
 2. `.openplan` anchor file at project root for multi-session resumption.
-3. Architecture reference: `PLAN.md` in repo root.
+3. Architecture reference: `~/Code/OPENPLAN.md`.
