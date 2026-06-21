@@ -106,7 +106,7 @@ GitHub Actions runs lint, test, build on every push/PR. Publish to npm happens a
 
 - **FastMCP** — MCP framework with Zod schemas for input validation
 - **SQLite** via `better-sqlite3` / Drizzle ORM — 7 tables, local-first
-- **Mesh API** (Python/FastAPI on Fly.io) — cross-session cost learning with MAD filter, Bayesian shrinkage, per-key rate limiting
+- **Mesh API** (proprietary, at `github.com/vncsleal/openplan-api`) — cross-session cost learning
 - **Structured logging** — `createLogger(module)` with `[openplan:module]` prefix
 - **Coverage** — Vitest with 60% branch / 65% line thresholds
 
