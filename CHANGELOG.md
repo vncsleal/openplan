@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.20 — 2026-06-21
+
+- **Feat:** Cost probe adapter for OpenCode — reads real token consumption from OpenCode's SQLite database (`tokens_input + tokens_output + tokens_reasoning`), replaces the useless wall-clock timer
+- **Feat:** `createOpenCodeCostProbe()` — in-process adapter using `better-sqlite3`, no scripts, no subprocesses
+- **Feat:** `createClaudeCostProbe()` / `createCursorCostProbe()` — placeholder adapters for future host implementations
+- **Feat:** `createNullCostProbe()` — graceful degradation fallback, always returns `null`
+- **Feat:** `createShellCostProbe()` — community adapter via external command (user configures in TOML)
+- **Feat:** `isOpenCodeAvailable()` — auto-detects OpenCode installation by checking for the local DB
+- **Feat:** `CONTRIBUTING.md` — full guide for AI agents to build cost probe adapters for any MCP host
+- **Fix:** Removed `createTimerCostProbe()` — wall-clock seconds are meaningless for AI estimation
+- **Fix:** Token count normalization — all adapters return tokens as the primary cost unit
+
 ## 0.1.19 — 2026-06-21
 
 - **Security:** `is_active = 1` check added to `/v1/account` and `/v1/manage` — revoked keys can no longer access subscription/billing

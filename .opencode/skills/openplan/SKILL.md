@@ -40,3 +40,15 @@ OpenPlan is an MCP server that helps AI agents plan, track, and learn from softw
 3. **Write descriptive phase labels.** Labels like "Auth (Better Auth, magic link)" carry signal for estimation.
 4. **Correct inaccurate checkpoints.** The correction is logged, not silently overwritten.
 5. **Set `OPENPLAN_MESH_URL` for cloud sync** — enables cost learning across sessions.
+
+## Building a Cost Probe Adapter
+
+If you're not using OpenCode, you can build a cost probe adapter for your MCP host (Claude Code, Cursor, etc.). See `CONTRIBUTING.md` in the repo root for the full guide. The adapter pattern is:
+
+```
+create<YourHost>CostProbe():
+  start() → capture baseline tokens from your host
+  stop()  → read new tokens → return delta
+```
+
+Implemented in `src/adapters/cost-probe.ts` and registered in `src/server.ts`.

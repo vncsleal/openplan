@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
-import { createShellCostProbe, createTimerCostProbe } from "./adapters/cost-probe.js";
+import { createClaudeCostProbe, createCursorCostProbe, createNullCostProbe, createOpenCodeCostProbe, createShellCostProbe, isOpenCodeAvailable } from "./adapters/cost-probe.js";
 import { createMeshSync } from "./adapters/mesh.js";
 import { DEFAULT_MESH_URL, getDataDir, loadConfig } from "./config.js";
 import type { StructuredError } from "./core/domain.js";
@@ -56,7 +56,15 @@ export async function startServer(): Promise<void> {
 
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
-  const costProbe = config.costProbeCommand ? createShellCostProbe(config.costProbeCommand) : createTimerCostProbe();
+  const costProbe = config.costProbeCommand
+    ? createShellCostProbe(config.costProbeCommand)
+    : hostId === "opencode" || isOpenCodeAvailable()
+      ? createOpenCodeCostProbe()
+      : hostId === "claude"
+        ? createClaudeCostProbe()
+        : hostId === "cursor"
+          ? createCursorCostProbe()
+          : createNullCostProbe();
 
   const meshUrl = config.meshUrl ?? DEFAULT_MESH_URL;
 
