@@ -3,7 +3,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
-import { createClaudeCostProbe, createCursorCostProbe, createNullCostProbe, createOpenCodeCostProbe, createShellCostProbe, isOpenCodeAvailable } from "./adapters/cost-probe.js";
+import {
+  createClaudeCostProbe,
+  createCursorCostProbe,
+  createNullCostProbe,
+  createOpenCodeCostProbe,
+  createShellCostProbe,
+  isOpenCodeAvailable,
+} from "./adapters/cost-probe.js";
 import { createMeshSync } from "./adapters/mesh.js";
 import { DEFAULT_MESH_URL, getDataDir, loadConfig } from "./config.js";
 import type { StructuredError } from "./core/domain.js";

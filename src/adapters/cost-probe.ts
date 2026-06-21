@@ -14,7 +14,7 @@ const OPENCODE_DB_PATHS: (() => string)[] = [
   // macOS Desktop
   () => join(homedir(), "Library", "Application Support", "ai.opencode.desktop", "opencode", "opencode.db"),
   // Windows
-  () => process.env.APPDATA ? join(process.env.APPDATA, "opencode", "opencode.db") : "",
+  () => (process.env.APPDATA ? join(process.env.APPDATA, "opencode", "opencode.db") : ""),
 ];
 
 function findOpenCodeDb(): string {
@@ -84,7 +84,9 @@ export function createOpenCodeCostProbe(): CostProbe {
 export function createClaudeCostProbe(): CostProbe {
   let baseline = 0;
   return {
-    start(): void { baseline = Number.parseFloat(process.env.CLAUDE_RUNNING_COST ?? "") || 0 },
+    start(): void {
+      baseline = Number.parseFloat(process.env.CLAUDE_RUNNING_COST ?? "") || 0;
+    },
     stop(): number | null {
       if (baseline === 0) return null;
       const current = Number.parseFloat(process.env.CLAUDE_RUNNING_COST ?? "") || 0;
@@ -101,7 +103,9 @@ export function createClaudeCostProbe(): CostProbe {
 export function createCursorCostProbe(): CostProbe {
   let baseline = 0;
   return {
-    start(): void { baseline = Number.parseFloat(process.env.CURSOR_RUNNING_COST ?? "") || 0 },
+    start(): void {
+      baseline = Number.parseFloat(process.env.CURSOR_RUNNING_COST ?? "") || 0;
+    },
     stop(): number | null {
       if (baseline === 0) return null;
       const current = Number.parseFloat(process.env.CURSOR_RUNNING_COST ?? "") || 0;
@@ -136,6 +140,8 @@ export function createShellCostProbe(command: string): CostProbe {
 export function createNullCostProbe(): CostProbe {
   return {
     start(): void {},
-    stop(): number | null { return null },
+    stop(): number | null {
+      return null;
+    },
   };
 }
