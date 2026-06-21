@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -112,6 +112,97 @@ export function createCursorCostProbe(): CostProbe {
       const delta = current - baseline;
       baseline = 0;
       return delta > 0 ? Math.round(delta * 1_000_000) : null;
+    },
+  };
+}
+
+// ── Codex ──────────────────────────────────────────────────
+// Lê tokens diretamente do SQLite local do Codex Desktop/CLI.
+
+function codexHome(): string {
+  return process.env.CODEX_HOME || join(homedir(), ".codex");
+}
+
+function findCodexStateDb(): string {
+  const home = codexHome();
+  try {
+    const stateDbs = readdirSync(home)
+      .map((name) => {
+        const match = /^state_(\d+)\.sqlite$/.exec(name);
+        return match ? { name, version: Number.parseInt(match[1] ?? "0", 10) } : null;
+      })
+      .filter((entry): entry is { name: string; version: number } => entry !== null)
+      .sort((a, b) => b.version - a.version);
+
+    for (const { name } of stateDbs) {
+      const p = join(home, name);
+      if (existsSync(p)) return p;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+let _codexDbPath: string | undefined;
+
+function codexDbPath(): string {
+  if (_codexDbPath === undefined) {
+    _codexDbPath = findCodexStateDb();
+    console.error(`[openplan] codex probe db path: "${_codexDbPath || "(empty)"}"`);
+  }
+  return _codexDbPath;
+}
+
+export function isCodexAvailable(): boolean {
+  return Boolean(process.env.CODEX_THREAD_ID && codexDbPath());
+}
+
+function currentCodexThreadTokens(): number | null {
+  const threadId = process.env.CODEX_THREAD_ID;
+  const p = codexDbPath();
+  if (!threadId || !p) return null;
+
+  let db: Database.Database | null = null;
+  try {
+    db = new Database(p, { readonly: true });
+    const row = db.prepare("SELECT tokens_used FROM threads WHERE id = ?").get(threadId) as
+      | { tokens_used: number }
+      | undefined;
+    if (!row || !Number.isFinite(row.tokens_used)) return null;
+    return row.tokens_used;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+export function createCodexCostProbe(): CostProbe {
+  let baselineTokens: number | null = null;
+
+  return {
+    start(): void {
+      baselineTokens = currentCodexThreadTokens();
+      console.error(`[openplan] codex probe start: path=${codexDbPath()} tokens=${baselineTokens ?? "(null)"}`);
+    },
+
+    stop(): number | null {
+      if (baselineTokens === null) {
+        console.error(`[openplan] codex probe stop: baseline=null path=${codexDbPath()}`);
+        return null;
+      }
+
+      const tokens = currentCodexThreadTokens();
+      if (tokens === null) {
+        baselineTokens = null;
+        return null;
+      }
+
+      const delta = tokens - baselineTokens;
+      console.error(`[openplan] codex probe stop: tokens=${tokens} baseline=${baselineTokens} delta=${delta}`);
+      baselineTokens = null;
+      return delta > 0 ? delta : null;
     },
   };
 }

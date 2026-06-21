@@ -5,10 +5,12 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import {
   createClaudeCostProbe,
+  createCodexCostProbe,
   createCursorCostProbe,
   createNullCostProbe,
   createOpenCodeCostProbe,
   createShellCostProbe,
+  isCodexAvailable,
   isOpenCodeAvailable,
 } from "./adapters/cost-probe.js";
 import { createMeshSync } from "./adapters/mesh.js";
@@ -59,7 +61,9 @@ export async function startServer(): Promise<void> {
       ? ("claude" as const)
       : process.env.CURSOR_SESSION_ID
         ? ("cursor" as const)
-        : ("unknown" as const);
+        : process.env.CODEX_THREAD_ID
+          ? ("codex" as const)
+          : ("unknown" as const);
 
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
@@ -71,7 +75,9 @@ export async function startServer(): Promise<void> {
         ? createClaudeCostProbe()
         : hostId === "cursor"
           ? createCursorCostProbe()
-          : createNullCostProbe();
+          : hostId === "codex" || isCodexAvailable()
+            ? createCodexCostProbe()
+            : createNullCostProbe();
 
   const meshUrl = config.meshUrl ?? DEFAULT_MESH_URL;
 
