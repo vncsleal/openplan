@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.19 — 2026-06-21
+
+- **Security:** `is_active = 1` check added to `/v1/account` and `/v1/manage` — revoked keys can no longer access subscription/billing
+- **Security:** `hmac.compare_digest()` for admin key comparison (constant-time, prevents timing side-channel)
+- **Security:** Turso HTTP adapter now sends `None` params as `{"type": "null"}` instead of the literal string `"None"`
+- **Security:** `.dockerignore` excludes `.env`, `.git/`, `node_modules/`, `.venv/` from build context
+- **Fix:** Penetration tested — SQL injection, auth bypass, rate limiting, CORS, input validation all verified
+
 ## 0.1.18 — 2026-06-20
 
 - **Feat:** CI/CD pipeline (GitHub Actions — lint, test, build, npm publish on tag)

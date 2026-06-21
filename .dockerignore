@@ -1,0 +1,15 @@
+node_modules/
+.venv/
+.env
+.git/
+.gitignore
+.gitleaks.toml
+.github/
+.vscode/
+src/
+tests/
+.*.swp
+*.log
+coverage/
+dist/
+.vitest/

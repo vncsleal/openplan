@@ -8,6 +8,13 @@ from typing import Any
 
 import httpx
 
+
+def _turso_type(value: object) -> dict[str, object]:
+    if value is None:
+        return {"type": "null"}
+    return {"type": "text", "value": str(value)}
+
+
 # ─── Turso HTTP adapter ────────────────────────────────────────────────────
 
 
@@ -31,7 +38,7 @@ class _TursoHTTP:
     def _exec(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         stmt: dict[str, Any] = {"sql": sql}
         if params:
-            stmt["args"] = [{"type": "text", "value": str(p)} for p in params]
+            stmt["args"] = [_turso_type(p) for p in params]
         resp = self._client.post(
             f"{self._url}/v2/pipeline",
             json={"requests": [{"type": "execute", "stmt": stmt}]},

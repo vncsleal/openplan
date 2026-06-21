@@ -463,10 +463,10 @@ async def subscription_status(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Missing API key")
 
     key_row = conn.execute(
-        "SELECT user_id FROM api_keys WHERE key = ?", (auth,)
+        "SELECT user_id FROM api_keys WHERE key = ? AND is_active = 1", (auth,)
     ).fetchone()
     if not key_row:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise HTTPException(status_code=404, detail="API key not found or inactive")
 
     sub = get_subscription(conn, key_row["user_id"])
     if sub:
@@ -616,10 +616,10 @@ async def billing_portal(request: Request) -> dict[str, str]:
     stripe_sdk.api_key = STRIPE_SECRET_KEY
 
     key_row = conn.execute(
-        "SELECT user_id FROM api_keys WHERE key = ?", (auth,)
+        "SELECT user_id FROM api_keys WHERE key = ? AND is_active = 1", (auth,)
     ).fetchone()
     if not key_row:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise HTTPException(status_code=404, detail="API key not found or inactive")
 
     sub = get_subscription(conn, key_row["user_id"])
     if not sub:
@@ -669,9 +669,11 @@ async def billing_portal(request: Request) -> dict[str, str]:
 async def admin_create_key(
     request: Request, tier: str = "free", label: str = ""
 ) -> dict[str, str]:
+    import hmac
+
     admin_key = os.environ.get("OPENPLAN_ADMIN_KEY", "")
     auth = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not admin_key or auth != admin_key:
+    if not admin_key or not hmac.compare_digest(auth, admin_key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
     key = generate_api_key(conn, tier=tier, label=label)
     return {"api_key": key, "tier": tier, "label": label}
