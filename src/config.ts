@@ -4,7 +4,37 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 
-type TomlDoc = Record<string, unknown>;
+interface MeshSection {
+  enabled?: boolean;
+  url?: string;
+  api_key?: string;
+}
+
+interface CostProbeSection {
+  command?: string;
+}
+
+function readMeshSection(doc: TomlRaw): MeshSection | undefined {
+  const raw = doc.mesh;
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  return {
+    enabled: typeof obj.enabled === "boolean" ? obj.enabled : undefined,
+    url: typeof obj.url === "string" ? obj.url : undefined,
+    api_key: typeof obj.api_key === "string" ? obj.api_key : undefined,
+  };
+}
+
+function readCostProbeSection(doc: TomlRaw): CostProbeSection | undefined {
+  const raw = doc.cost_probe;
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  return {
+    command: typeof obj.command === "string" ? obj.command : undefined,
+  };
+}
+
+type TomlRaw = Record<string, unknown>;
 
 export const DEFAULT_MESH_URL = "https://api.openplan.cc";
 
@@ -59,18 +89,19 @@ export function loadConfig(): OpenPlanConfig {
   const configPath = getConfigPath();
   const identityId = loadOrCreateIdentity();
 
-  let config: TomlDoc = {};
+  let doc: TomlRaw = {};
   if (existsSync(configPath)) {
     try {
-      config = parse(readFileSync(configPath, "utf-8")) as TomlDoc;
+      const raw = parse(readFileSync(configPath, "utf-8"));
+      doc = raw as TomlRaw;
     } catch (e) {
       console.error(`[openplan] Failed to parse config: ${e instanceof Error ? e.message : "unknown error"}`);
-      config = {};
+      doc = {};
     }
   }
 
-  const meshSection = config.mesh as Record<string, unknown> | undefined;
-  const costProbeSection = config.cost_probe as Record<string, unknown> | undefined;
+  const meshSection = readMeshSection(doc);
+  const costProbeSection = readCostProbeSection(doc);
 
   const meshEnabled = meshSection?.enabled !== false;
 
@@ -78,43 +109,42 @@ export function loadConfig(): OpenPlanConfig {
     identityId,
     projectRoot: process.env.OPENPLAN_PROJECT_ROOT ?? process.cwd(),
     dataDir: getDataDir(),
-    meshUrl: meshEnabled
-      ? (process.env.OPENPLAN_MESH_URL ?? (meshSection?.url as string | undefined) ?? DEFAULT_MESH_URL)
-      : null,
-    apiKey: process.env.OPENPLAN_API_KEY ?? (meshSection?.api_key as string | undefined) ?? null,
-    costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? (costProbeSection?.command as string | undefined) ?? null,
+    meshUrl: meshEnabled ? (process.env.OPENPLAN_MESH_URL ?? meshSection?.url ?? DEFAULT_MESH_URL) : null,
+    apiKey: process.env.OPENPLAN_API_KEY ?? meshSection?.api_key ?? null,
+    costProbeCommand: process.env.OPENPLAN_COST_PROBE ?? costProbeSection?.command ?? null,
   };
 }
 
 export function saveConfig(partial: Partial<OpenPlanConfig>): void {
   const configPath = getConfigPath();
-  let existing: TomlDoc = {};
+  let doc: TomlRaw = {};
   if (existsSync(configPath)) {
     try {
-      existing = parse(readFileSync(configPath, "utf-8")) as TomlDoc;
+      const raw = parse(readFileSync(configPath, "utf-8"));
+      doc = raw as TomlRaw;
     } catch (e) {
       console.error(`[openplan] Failed to parse config for save: ${e instanceof Error ? e.message : "unknown error"}`);
-      existing = {};
+      doc = {};
     }
   }
 
-  const currentMesh = existing.mesh as Record<string, unknown> | undefined;
+  const currentMesh = readMeshSection(doc);
 
   if (partial.meshUrl !== undefined || partial.apiKey !== undefined || partial.meshUrl === null) {
-    existing.mesh = {
+    doc.mesh = {
       ...(currentMesh ?? {}),
-      url: partial.meshUrl ?? (currentMesh?.url as string | undefined) ?? DEFAULT_MESH_URL,
-      api_key: partial.apiKey ?? (currentMesh?.api_key as string | undefined),
+      url: partial.meshUrl ?? currentMesh?.url ?? DEFAULT_MESH_URL,
+      api_key: partial.apiKey ?? currentMesh?.api_key,
       enabled: partial.meshUrl !== null,
     };
   }
 
   if (partial.costProbeCommand !== undefined) {
-    const currentProbe = existing.cost_probe as Record<string, unknown> | undefined;
-    existing.cost_probe = {
-      command: partial.costProbeCommand ?? (currentProbe?.command as string | undefined),
+    const currentProbe = readCostProbeSection(doc);
+    doc.cost_probe = {
+      command: partial.costProbeCommand ?? currentProbe?.command,
     };
   }
 
-  writeFileSync(configPath, stringify(existing), "utf-8");
+  writeFileSync(configPath, stringify(doc), "utf-8");
 }

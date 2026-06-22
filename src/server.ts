@@ -5,10 +5,12 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import {
   createClaudeCostProbe,
+  createCodexCostProbe,
   createCursorCostProbe,
   createNullCostProbe,
   createOpenCodeCostProbe,
   createShellCostProbe,
+  isCodexAvailable,
   isOpenCodeAvailable,
 } from "./adapters/cost-probe.js";
 import { createMeshSync } from "./adapters/mesh.js";
@@ -27,6 +29,34 @@ import { handleReview } from "./handlers/review-handler.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
 const log = createLogger("server");
+
+const RATE_LIMIT_MAX = Number.parseInt(process.env.OPENPLAN_RATE_LIMIT ?? "60", 10);
+const RATE_LIMIT_WINDOW_S = 60;
+
+const rateLimitCounts = new Map<number, number>();
+
+function checkRateLimit(): boolean {
+  if (RATE_LIMIT_MAX <= 0) return true;
+  const windowKey = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_S * 1000));
+  const count = (rateLimitCounts.get(windowKey) ?? 0) + 1;
+  if (count > RATE_LIMIT_MAX) return false;
+  rateLimitCounts.set(windowKey, count);
+  // Cleanup old entries
+  for (const key of rateLimitCounts.keys()) {
+    if (key < windowKey - 1) rateLimitCounts.delete(key);
+  }
+  return true;
+}
+
+interface Metrics {
+  planCalls: number;
+  checkpointCalls: number;
+  reviewCalls: number;
+  errors: number;
+  startTime: number;
+}
+
+const metrics: Metrics = { planCalls: 0, checkpointCalls: 0, reviewCalls: 0, errors: 0, startTime: Date.now() };
 
 async function checkProTier(meshUrl: string, apiKey: string | null): Promise<boolean> {
   if (!apiKey) return false;
@@ -59,7 +89,9 @@ export async function startServer(): Promise<void> {
       ? ("claude" as const)
       : process.env.CURSOR_SESSION_ID
         ? ("cursor" as const)
-        : ("unknown" as const);
+        : process.env.CODEX_THREAD_ID
+          ? ("codex" as const)
+          : ("unknown" as const);
 
   const meshSync: MeshSync = createMeshSync(config.meshUrl, config.apiKey);
 
@@ -71,7 +103,9 @@ export async function startServer(): Promise<void> {
         ? createClaudeCostProbe()
         : hostId === "cursor"
           ? createCursorCostProbe()
-          : createNullCostProbe();
+          : hostId === "codex" || isCodexAvailable()
+            ? createCodexCostProbe()
+            : createNullCostProbe();
 
   const meshUrl = config.meshUrl ?? DEFAULT_MESH_URL;
 
@@ -136,6 +170,12 @@ export async function startServer(): Promise<void> {
     }),
     annotations: { readOnlyHint: true },
     execute: async (args) => {
+      if (!checkRateLimit()) {
+        return JSON.stringify({
+          error: { code: "INTERNAL", message: "Rate limit exceeded. Try again later.", retry_after: 60 },
+        } as StructuredError);
+      }
+      metrics.planCalls++;
       const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
       if (!args.goal || args.goal.trim().length === 0) {
         return JSON.stringify({
@@ -183,6 +223,12 @@ export async function startServer(): Promise<void> {
     }),
     annotations: { destructiveHint: true },
     execute: async (args) => {
+      if (!checkRateLimit()) {
+        return JSON.stringify({
+          error: { code: "INTERNAL", message: "Rate limit exceeded. Try again later.", retry_after: 60 },
+        } as StructuredError);
+      }
+      metrics.checkpointCalls++;
       const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
       const probeCost = costProbe.stop();
 
@@ -215,10 +261,49 @@ export async function startServer(): Promise<void> {
     }),
     annotations: { readOnlyHint: true },
     execute: async (args) => {
+      if (!checkRateLimit()) {
+        return JSON.stringify({
+          error: { code: "INTERNAL", message: "Rate limit exceeded. Try again later.", retry_after: 60 },
+        } as StructuredError);
+      }
+      metrics.reviewCalls++;
       const project = args.project ?? process.env.OPENPLAN_PROJECT ?? "default";
       const meshReachable = await meshSync.isReachable();
       const result = handleReview({ routeId: args.route_id, project, store, meshReachable });
       return JSON.stringify(result);
+    },
+  });
+
+  // Auto-prune old routes on startup
+  (() => {
+    try {
+      const pruned = store.pruneOldRoutes(90);
+      if (pruned > 0) log.info(`Auto-pruned ${pruned} old routes`);
+    } catch {
+      log.debug("Auto-prune skipped");
+    }
+  })();
+
+  server.addResource({
+    uri: "openplan://version",
+    name: "Server Version",
+    mimeType: "text/plain",
+    description: "OpenPlan MCP server version",
+    async load() {
+      return { text: pkg.version };
+    },
+  });
+
+  server.addResource({
+    uri: "openplan://metrics",
+    name: "Server Metrics",
+    mimeType: "application/json",
+    description: "Request counts, uptime, error rate",
+    async load() {
+      const uptime = Math.round((Date.now() - metrics.startTime) / 1000);
+      return {
+        text: JSON.stringify({ ...metrics, uptimeSeconds: uptime }, null, 2),
+      };
     },
   });
 

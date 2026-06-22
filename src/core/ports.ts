@@ -50,6 +50,8 @@ export interface DataStore {
   getIdentityId(): string;
   getRouteState(routeId: string): RouteState | null;
 
+  pruneOldRoutes(maxAgeDays: number): number;
+
   transaction<T>(fn: (store: DataStore) => T): T;
 }
 

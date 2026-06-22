@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: OpenPlan Discussions
+    url: https://github.com/vncsleal/openplan/discussions
+    about: Ask questions and discuss ideas

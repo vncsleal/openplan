@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.21 — 2026-06-21
+
+- **Feat:** Coverage enforcement in CI (`vitest run --coverage`), 6 test files (55 tests), 55% min thresholds
+- **Feat:** Python Mesh API test skeleton with pytest (health, checkpoints, baselines, auth tests)
+- **Feat:** CI security scanning — `npm audit --audit-level=high`, gitleaks action, Python API tests
+- **Feat:** Adapter quality pipeline — `scripts/validate-adapter.sh` CI gate with contract validation
+- **Feat:** Drizzle Kit migration system — `drizzle-kit generate`, `db:generate`/`db:push`/`db:drop` scripts
+- **Feat:** Prune old completed routes (auto-prune on startup, 90-day default window)
+- **Feat:** Rate limiting on MCP server (configurable via `OPENPLAN_RATE_LIMIT`, default 60 req/min)
+- **Feat:** `openplan uninstall` command — removes config from OpenCode/Claude Desktop
+- **Feat:** Structured file logging (per-module log files in `~/.local/share/openplan/logs/`)
+- **Feat:** Server metrics resource (`openplan://metrics`) with request counts, uptime, error rate
+- **Feat:** Server version resource (`openplan://version`)
+- **Feat:** Dynamic shell completion generation (bash/zsh/fish) from Commander definitions
+- **Feat:** Enhanced CLI `--help` with categorized commands and examples
+- **Feat:** Dockerfile for MCP server (multi-stage Node 22 Alpine build)
+- **Feat:** GitHub issue/PR templates, SECURITY.md, CODE_OF_CONDUCT.md
+- **Fix:** `console.warn` in checkpoint-handler.ts replaced with structured logger
+- **Fix:** Stale path in `tests/mcp-e2e.sh` (referenced old `src/cli.ts`)
+- **Fix:** 7 unsafe `as Record<string, unknown>` casts in config.ts, mesh.ts, cli.ts — replaced with typed helpers with runtime validation
+- **Fix:** ShellCostProbe handles empty/whitespace output correctly (returns null instead of 0)
+
 ## 0.1.20 — 2026-06-21
 
 - **Feat:** Cost probe adapter for OpenCode — reads real token consumption from OpenCode's SQLite database (`tokens_input + tokens_output + tokens_reasoning`), replaces the useless wall-clock timer
