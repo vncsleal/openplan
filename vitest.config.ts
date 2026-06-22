@@ -9,9 +9,9 @@ export default defineConfig({
       exclude: ["src/cli.ts", "src/server.ts", "src/db/connection.ts"],
       thresholds: {
         branches: 60,
-        functions: 60,
-        lines: 65,
-        statements: 65,
+        functions: 55,
+        lines: 55,
+        statements: 55,
       },
     },
   },

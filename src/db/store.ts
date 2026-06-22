@@ -170,6 +170,30 @@ export function createStore(database: BetterSQLite3Database<typeof schema>, iden
         .run();
     },
 
+    pruneOldRoutes(maxAgeDays: number): number {
+      const cutoff = new Date(Date.now() - maxAgeDays * 86400_000).toISOString();
+      const oldRoutes = db
+        .select()
+        .from(schema.routes)
+        .where(and(eq(schema.routes.status, "completed")))
+        .all();
+      let count = 0;
+      for (const r of oldRoutes) {
+        if (r.updatedAt < cutoff) {
+          const phases = db.select().from(schema.routePhases).where(eq(schema.routePhases.routeId, r.id)).all();
+          const hasActive = phases.some((p) => p.status === "in_progress" || p.status === "pending");
+          if (!hasActive) {
+            db.update(schema.routes)
+              .set({ status: "archived", updatedAt: new Date().toISOString() })
+              .where(eq(schema.routes.id, r.id))
+              .run();
+            count++;
+          }
+        }
+      }
+      return count;
+    },
+
     getRoutesForProject(project: string): Route[] {
       return db.select().from(schema.routes).where(eq(schema.routes.project, project)).all().map(toRoute);
     },

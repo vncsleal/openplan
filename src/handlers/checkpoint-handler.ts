@@ -1,6 +1,9 @@
 import type { CheckpointResult, RouteState, StructuredError } from "../core/domain.js";
+import { createLogger } from "../core/logger.js";
 import type { DataStore } from "../core/ports.js";
 import { checkpoint } from "../core/tracker.js";
+
+const log = createLogger("checkpoint");
 
 export interface CheckpointHandlerInput {
   phase?: string;
@@ -27,8 +30,8 @@ export function handleCheckpoint(input: CheckpointHandlerInput): CheckpointResul
         if (phase && phase.expectedCost !== null && phase.expectedCost > 0) {
           const ratio = Math.abs(input.actualCost - phase.expectedCost) / phase.expectedCost;
           if (ratio > 10) {
-            console.warn(
-              `Checkpoint: actualCost ${input.actualCost} is ${ratio.toFixed(1)}x expected ${phase.expectedCost} for phase "${input.phase}"`,
+            log.warn(
+              `actualCost ${input.actualCost} is ${ratio.toFixed(1)}x expected ${phase.expectedCost} for phase "${input.phase}"`,
             );
           }
         }

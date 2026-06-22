@@ -3,6 +3,8 @@ import { createLogger } from "../core/logger.js";
 import type { MeshSync } from "../core/ports.js";
 import { BaselinesResponse } from "../core/schemas.js";
 
+const VALID_MATCH_LEVELS = new Set(["exact", "label_keyword", "action"]);
+
 const log = createLogger("mesh");
 
 function outcomeToMesh(outcome: CalibrationEvent["outcome"]): string {
@@ -60,20 +62,26 @@ export function createMeshSync(meshUrl: string | null, apiKey: string | null): M
         const res = await fetch(`${baseUrl}/v1/baselines`, { headers });
         if (!res.ok) return null;
 
-        const body = (await res.json()) as Record<string, unknown>;
+        const body: unknown = await res.json();
         const parsed = BaselinesResponse.parse(body);
         const rawBaselines = Array.isArray(parsed) ? parsed : parsed.baselines;
 
-        return rawBaselines.map((b) => ({
-          id: crypto.randomUUID(),
-          matchLevel: (b.match_level as CostBaseline["matchLevel"]) ?? "action",
-          action: b.action ?? "",
-          avgCost: (b.cost_tokens ?? b.p50 ?? 0) as number,
-          ciLo: (b.p25 ?? null) as number | null,
-          ciHi: (b.p75 ?? null) as number | null,
-          sampleCount: (b.sample_count ?? 0) as number,
-          createdAt: new Date().toISOString(),
-        }));
+        return rawBaselines.map((b) => {
+          const rawMatch = typeof b.match_level === "string" ? b.match_level : "";
+          const matchLevel: CostBaseline["matchLevel"] = VALID_MATCH_LEVELS.has(rawMatch)
+            ? (rawMatch as CostBaseline["matchLevel"])
+            : "action";
+          return {
+            id: crypto.randomUUID(),
+            matchLevel,
+            action: typeof b.action === "string" ? b.action : "",
+            avgCost: typeof b.cost_tokens === "number" ? b.cost_tokens : typeof b.p50 === "number" ? b.p50 : 0,
+            ciLo: typeof b.p25 === "number" ? b.p25 : null,
+            ciHi: typeof b.p75 === "number" ? b.p75 : null,
+            sampleCount: typeof b.sample_count === "number" ? b.sample_count : 0,
+            createdAt: new Date().toISOString(),
+          };
+        });
       } catch (e) {
         log.warn("Baseline fetch failed", e);
         return [];

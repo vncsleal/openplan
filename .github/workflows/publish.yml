@@ -8,6 +8,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openplan-mcp
 
     permissions:
       contents: read
@@ -20,8 +23,10 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: npm
+          cache-dependency-path: openplan-mcp/package-lock.json
 
       - run: npm ci
+      - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm test
       - run: npm run build

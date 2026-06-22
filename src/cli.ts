@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
@@ -25,6 +25,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
 const log = createLogger("cli");
 
+const COMMAND_CATEGORIES: Record<string, string[]> = {
+  "Authentication:": ["auth", "subscribe", "portal", "account"],
+  "Data:": ["config", "status", "log", "export"],
+  "Admin:": ["install", "uninstall", "doctor", "completion", "mesh"],
+  "Info:": ["help", "--version"],
+};
+
 const program = new Command();
 
 program
@@ -32,7 +39,43 @@ program
   .description("Waze for AI agents -- plan, track, and learn from software projects")
   .version(pkg.version)
   .option("--json", "Output in JSON format")
-  .option("--no-color", "Disable color output");
+  .option("--no-color", "Disable color output")
+  .configureHelp({
+    formatHelp: (cmd, helper) => {
+      const lines: string[] = [];
+      lines.push(`Usage: ${cmd.name()} [options] [command]\n`);
+      lines.push("Waze for AI agents -- plan, track, and learn from software projects\n");
+
+      const opts = cmd.options.filter((o) => !o.hidden);
+      if (opts.length > 0) {
+        lines.push("Options:");
+        for (const o of opts) {
+          lines.push(`  ${o.flags.padEnd(20)} ${o.description ?? ""}`);
+        }
+        lines.push("");
+      }
+
+      lines.push("Commands:");
+      for (const [category, cmds] of Object.entries(COMMAND_CATEGORIES)) {
+        lines.push(`  ${category}`);
+        for (const name of cmds) {
+          const found = cmd.commands.find((c) => c.name() === name);
+          if (found) {
+            lines.push(`    ${name.padEnd(16)} ${found.description()}`);
+          }
+        }
+      }
+
+      lines.push("");
+      lines.push("Examples:");
+      lines.push("  openplan install              Detect and install in MCP clients");
+      lines.push("  openplan auth                 Authenticate with GitHub");
+      lines.push("  openplan config show          View configuration");
+      lines.push("  openplan doctor               Check system health");
+      lines.push("");
+      return lines.join("\n");
+    },
+  });
 
 function meshUrl(): string {
   return process.env.OPENPLAN_MESH_URL ?? DEFAULT_MESH_URL;
@@ -300,53 +343,167 @@ program
     }
   });
 
-// ── completion ────────────────────────────────────────────────────────────────
+// ── uninstall ───────────────────────────────────────────────────────────────
 
-const COMPLETION_SCRIPT: Record<string, string> = {};
+program
+  .command("uninstall")
+  .description("Remove OpenPlan from MCP clients and optionally delete local data")
+  .option("--all", "Also delete local database and config")
+  .action(async (options: { all: boolean }) => {
+    const opencodeDir = process.env.XDG_CONFIG_HOME
+      ? join(process.env.XDG_CONFIG_HOME, "opencode")
+      : join(process.env.HOME ?? "/tmp", ".config", "opencode");
+    const opencodeConfig = join(opencodeDir, "opencode.json");
+    const claudeConfig = join(
+      process.env.HOME ?? "/tmp",
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude_desktop_config.json",
+    );
 
-COMPLETION_SCRIPT.bash = [
-  "_openplan_completions() {",
-  "  local cur prev opts; COMPREPLY=()",
-  '  cur="${COMP_WORDS[COMP_CWORD]}"',
-  '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
-  '  opts="--help --json --no-color --version install auth subscribe portal account config mesh status log export help"',
-  '  if [[ ${cur} == -* ]]; then COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
-  '  else COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
-  "  fi",
-  "  return 0",
-  "}",
-  "complete -F _openplan_completions openplan",
-].join("\n");
+    let removed = 0;
 
-COMPLETION_SCRIPT.zsh = [
-  "#compdef openplan",
-  "_arguments \\",
-  '  "--help[display help]" \\',
-  '  "--json[output in JSON format]" \\',
-  '  "--no-color[disable color output]" \\',
-  '  "--version[show version]" \\',
-  '  "1: :(install auth subscribe portal account config mesh status log export help)" \\',
-  '  "*::arg:->args"',
-].join("\n");
+    if (existsSync(opencodeConfig)) {
+      try {
+        const raw = readFileSync(opencodeConfig, "utf-8");
+        const cfg: Record<string, unknown> = JSON.parse(raw);
+        const mcp = cfg.mcp as Record<string, unknown> | undefined;
+        if (mcp?.openplan) {
+          const { openplan: _, ...rest } = mcp;
+          if (Object.keys(rest).length === 0) {
+            const { mcp: _mcp, ...cfgRest } = cfg;
+            writeFileSync(opencodeConfig, JSON.stringify(cfgRest, null, 2), "utf-8");
+          } else {
+            cfg.mcp = rest;
+            writeFileSync(opencodeConfig, JSON.stringify(cfg, null, 2), "utf-8");
+          }
+          console.error(`  ${pc.green("*")} Removed from OpenCode`);
+          removed++;
+        }
+      } catch (e) {
+        console.error(
+          `  ${pc.red("!")} Failed to update OpenCode: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+    }
 
-COMPLETION_SCRIPT.fish = [
-  "function _openplan_completions",
-  "  set -l cmds install auth subscribe portal account config mesh status log export help",
-  '  complete -c openplan -f -a "$cmds" -d "OpenPlan command"',
-  '  complete -c openplan -l help -d "display help"',
-  '  complete -c openplan -l json -d "output in JSON format"',
-  '  complete -c openplan -l no-color -d "disable color output"',
-  '  complete -c openplan -l version -d "show version"',
-  "end",
-  "_openplan_completions",
-].join("\n");
+    if (existsSync(claudeConfig)) {
+      try {
+        const raw = readFileSync(claudeConfig, "utf-8");
+        const cfg: Record<string, unknown> = JSON.parse(raw);
+        const servers = cfg.mcpServers as Record<string, unknown> | undefined;
+        if (servers?.openplan) {
+          const { openplan: _, ...rest } = servers;
+          if (Object.keys(rest).length === 0) {
+            const { mcpServers: _ms, ...cfgRest } = cfg;
+            writeFileSync(claudeConfig, JSON.stringify(cfgRest, null, 2), "utf-8");
+          } else {
+            cfg.mcpServers = rest;
+            writeFileSync(claudeConfig, JSON.stringify(cfg, null, 2), "utf-8");
+          }
+          console.error(`  ${pc.green("*")} Removed from Claude Desktop`);
+          removed++;
+        }
+      } catch (e) {
+        console.error(
+          `  ${pc.red("!")} Failed to update Claude Desktop: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
+      }
+    }
+
+    if (removed === 0) {
+      console.error(`  ${pc.yellow(">")} OpenPlan was not configured in any MCP client.`);
+    }
+
+    if (options.all) {
+      const dbPath = join(getDataDir(), "openplan.db");
+      if (existsSync(dbPath)) {
+        try {
+          rmSync(dbPath, { force: true });
+          console.error(`  ${pc.green("*")} Local database deleted.`);
+        } catch (e) {
+          console.error(
+            `  ${pc.red("!")} Failed to delete database: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
+        }
+      }
+      const configPath = getConfigPath();
+      if (existsSync(configPath)) {
+        try {
+          rmSync(configPath, { force: true });
+          console.error(`  ${pc.green("*")} Config file deleted.`);
+        } catch (e) {
+          console.error(
+            `  ${pc.red("!")} Failed to delete config: ${e instanceof Error ? e.message : "unknown error"}`,
+          );
+        }
+      }
+    }
+
+    console.error(`\n  ${pc.green("*")} OpenPlan uninstalled. Restart your MCP client.\n`);
+  });
+
+// ── completion ─────────────────────────────────────────────────────────────
+
+function generateCompletionScript(shell: string): string | null {
+  const cmdNames = program.commands.map((c) => c.name()).join(" ");
+  const optNames = ["--help", "--json", "--no-color", "--version"].join(" ");
+  const all = `${optNames} ${cmdNames}`;
+
+  if (shell === "bash") {
+    return [
+      "_openplan_completions() {",
+      "  local cur prev opts; COMPREPLY=()",
+      '  cur="${COMP_WORDS[COMP_CWORD]}"',
+      '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
+      `  opts="${all}"`,
+      '  if [[ ${cur} == -* ]]; then COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
+      '  else COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )',
+      "  fi",
+      "  return 0",
+      "}",
+      "complete -F _openplan_completions openplan",
+    ].join("\n");
+  }
+
+  if (shell === "zsh") {
+    const cmds = cmdNames.split(" ").join(" ");
+    return [
+      "#compdef openplan",
+      "_arguments \\",
+      "  '--help[display help]' \\",
+      "  '--json[output in JSON format]' \\",
+      "  '--no-color[disable color output]' \\",
+      "  '--version[show version]' \\",
+      `  "1: :(${cmds})" \\`,
+      "  '*::arg:->args'",
+    ].join("\n");
+  }
+
+  if (shell === "fish") {
+    return [
+      "function _openplan_completions",
+      `  set -l cmds ${cmdNames}`,
+      '  complete -c openplan -f -a "$cmds" -d "OpenPlan command"',
+      '  complete -c openplan -l help -d "display help"',
+      '  complete -c openplan -l json -d "output in JSON format"',
+      '  complete -c openplan -l no-color -d "disable color output"',
+      '  complete -c openplan -l version -d "show version"',
+      "end",
+      "_openplan_completions",
+    ].join("\n");
+  }
+
+  return null;
+}
 
 program
   .command("completion")
   .description("Generate shell completion script")
   .argument("[shell]", "Shell type: bash, zsh, fish", "bash")
   .action((shell: string) => {
-    const script = COMPLETION_SCRIPT[shell as keyof typeof COMPLETION_SCRIPT];
+    const script = generateCompletionScript(shell);
     if (!script) {
       console.error(`  ${pc.red("!")} Unsupported shell: "${shell}". Supported: bash, zsh, fish.\n`);
       process.exit(1);
@@ -599,9 +756,12 @@ program
       const tomlPath = getConfigPath();
       try {
         const raw = readFileSync(tomlPath, "utf-8");
-        const doc = parse(raw) as Record<string, unknown>;
-        const mesh = doc.mesh as Record<string, unknown> | undefined;
-        doc.mesh = { ...(mesh ?? {}), enabled: false, url: DEFAULT_MESH_URL };
+        const parsed: unknown = parse(raw);
+        const doc = parsed as Record<string, unknown>;
+        const meshRaw = doc.mesh;
+        const mesh: Record<string, unknown> =
+          meshRaw && typeof meshRaw === "object" ? { ...(meshRaw as Record<string, unknown>) } : {};
+        doc.mesh = { ...mesh, enabled: false, url: DEFAULT_MESH_URL };
         writeFileSync(tomlPath, stringify(doc), "utf-8");
         console.error(`  ${pc.green("*")} Mesh sync disabled.\n`);
       } catch (e) {
@@ -952,6 +1112,9 @@ if (isHelp) {
   process.exit(0);
 } else if (isKnownCommand) {
   program.parse(process.argv);
+} else if (firstNonFlag) {
+  console.error(`${pc.red("!")} Unknown command "${firstNonFlag}". Run \`openplan --help\` for usage.\n`);
+  process.exit(1);
 } else {
   startServer().catch((e) => {
     console.error(

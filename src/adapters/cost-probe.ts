@@ -216,6 +216,7 @@ export function createShellCostProbe(command: string): CostProbe {
     stop(): number | null {
       try {
         const out = execSync(command, { encoding: "utf-8", timeout: 5000 }).toString().trim();
+        if (out.length === 0) return null;
         const parsed = Number(out);
         return Number.isFinite(parsed) ? Math.round(parsed) : null;
       } catch {
