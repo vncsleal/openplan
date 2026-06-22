@@ -1,6 +1,7 @@
 {
   "name": "@openplan/mcp",
-  "version": "0.1.21",
+  "mcpName": "io.github.vncsleal/openplan",
+  "version": "0.1.22",
   "description": "Waze for AI agents — plan, track, and learn from software projects.",
   "author": "Vinicius Leal",
   "license": "MIT",
