@@ -9,9 +9,6 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: openplan-mcp
 
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +16,6 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: openplan-mcp/package-lock.json
 
       - run: npm ci
       - run: npm audit --audit-level=high
@@ -30,9 +26,6 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: openplan-mcp
 
     steps:
       - uses: actions/checkout@v4
@@ -40,19 +33,4 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
 
-  api-tests:
-    runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: openplan-api
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: openplan-api/services/telemetry/requirements.txt
-      - run: pip install -r services/telemetry/requirements.txt pytest httpx
-      - run: pytest -v
